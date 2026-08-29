@@ -103,13 +103,29 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     Write-Host ""
     Write-Host "The GitHub CLI is not installed, so the last step is yours:" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  1. Create an empty repository named $repoName at https://github.com/new"
-    Write-Host "     Do not tick 'Add a README', the folder already has one."
+    Write-Host "  1. Create a repository named $repoName at https://github.com/new"
+    Write-Host ""
+    Write-Host "     Leave ALL THREE boxes unticked: 'Add a README', 'Add .gitignore'," -ForegroundColor Yellow
+    Write-Host "     and 'Choose a license'. This folder already has all three, better" -ForegroundColor Yellow
+    Write-Host "     versions of them. Ticking any of them puts a commit on GitHub that" -ForegroundColor Yellow
+    Write-Host "     your folder does not have, and the push below is then refused." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  2. Then run these two lines, with your own username:"
     Write-Host ""
     Write-Host "       git remote add origin https://github.com/<your-username>/$repoName.git"
     Write-Host "       git push -u origin main"
+    Write-Host ""
+    Write-Host "  If step 2 is rejected with 'the remote contains work that you do not have'," -ForegroundColor Yellow
+    Write-Host "  you ticked one of those boxes. Look at the repository on github.com first."
+    Write-Host "  If all it holds is a generated README or LICENSE, nothing of yours is"
+    Write-Host "  there yet and you can overwrite it. That REWRITES the remote history,"
+    Write-Host "  which cannot be undone, so check the page before running:"
+    Write-Host ""
+    Write-Host "       git fetch origin"
+    Write-Host "       git push --force-with-lease -u origin main"
+    Write-Host ""
+    Write-Host "  The fetch makes the push refuse if the remote changed since you looked,"
+    Write-Host "  rather than overwriting blind."
     Write-Host ""
     Write-Host "  Or install the CLI and run this script again:  winget install GitHub.cli"
     exit 0

@@ -14,13 +14,17 @@ pzmodmanager-workshop-links.txt
 pzmodmanager.log
 settings.json
 
-# Left over from the old name, deleted by cleanup-old-name.ps1
+# Left over from the old name, before the tool became pzmodmanager
 pzmodcheck/
 pzmodcheck.spec
 run-pzmodcheck.py
 pzmodcheck-*.html
 pzmodcheck-*.txt
 tests/test_pzmodcheck.py
+
+# One-off helper scripts. They did their job, they are not part of the tool.
+cleanup-old-name.ps1
+setup-github.ps1
 
 # Never commit the Steamworks redistributable: it is Valve's to distribute,
 # not ours, and the tool is written so you supply your own copy.

@@ -16,9 +16,50 @@ overlaps: missing dependencies, overwritten files, redefined script objects.
 
 Client-side tool. Targets Build 42 by default; the Build 41 layout is handled too.
 
----
+## Contents
 
-## How a Build 42 mod is laid out
+**[Chapter I. How Project Zomboid loads mods](#chapter-i-how-project-zomboid-loads-mods)**
+
+- [Part I. The Build 42 folder layout](#part-i-the-build-42-folder-layout)
+- [Part II. How the load order actually works](#part-ii-how-the-load-order-actually-works)
+- [Part III. What the tool can and cannot tell you](#part-iii-what-the-tool-can-and-cannot-tell-you)
+
+**[Chapter II. Getting started](#chapter-ii-getting-started)**
+
+- [Part I. Install](#part-i-install)
+- [Part II. A plain run](#part-ii-a-plain-run)
+- [Part III. The interactive interface](#part-iii-the-interactive-interface)
+
+**[Chapter III. Managing your mods](#chapter-iii-managing-your-mods)**
+
+- [Part I. Choosing what you run](#part-i-choosing-what-you-run)
+- [Part II. Actually disabling a mod](#part-ii-actually-disabling-a-mod)
+- [Part III. Taking the load order into account](#part-iii-taking-the-load-order-into-account)
+- [Part IV. Mod images](#part-iv-mod-images)
+- [Part V. Workshop links](#part-v-workshop-links)
+
+**[Chapter IV. Steam](#chapter-iv-steam)**
+
+- [Part I. The Workshop lookup](#part-i-the-workshop-lookup)
+- [Part II. Changing your subscriptions](#part-ii-changing-your-subscriptions)
+- [Part III. Checking your subscriptions against the disk](#part-iii-checking-your-subscriptions-against-the-disk)
+
+**[Chapter V. Configuration and output](#chapter-v-configuration-and-output)**
+
+- [Part I. Settings](#part-i-settings)
+- [Part II. The log](#part-ii-the-log)
+- [Part III. Other useful options](#part-iii-other-useful-options)
+
+**[Chapter VI. Building and extending](#chapter-vi-building-and-extending)**
+
+- [Part I. Building a Windows executable](#part-i-building-a-windows-executable)
+- [Part II. Code layout](#part-ii-code-layout)
+- [Part III. Adding a rule](#part-iii-adding-a-rule)
+- [Part IV. A note on the font](#part-iv-a-note-on-the-font)
+
+## Chapter I. How Project Zomboid loads mods
+
+### Part I. The Build 42 folder layout
 
 This matters, because getting it wrong is the difference between a clean report
 and a page of imaginary conflicts.
@@ -49,23 +90,27 @@ the game would pick, and indexes only that branch. `--build 42` means "the newes
 42.x branch each mod offers"; `--build 42.15` pins the selection to what a 42.15
 client would load. The branch actually used is shown in the report inventory.
 
----
-
-## How the load order actually works
+### Part II. How the load order actually works
 
 Worth stating plainly, because every rule in this tool depends on it.
+
+#### A. The last mod in the list wins
 
 The engine reads the `Mods=` line from left to right and stacks each mod's media
 folders in that order. **The last mod in the list wins.** When two mods ship the
 same file, or define the same item, recipe or map tile, the one further right
 replaces the one before it, silently, with no error anywhere.
 
-**The game does not sort dependencies for you.** A mod that needs a framework has
+#### B. The game does not sort dependencies for you
+
+A mod that needs a framework has
 to sit *after* that framework in the list. `require=` in mod.info declares the
 relationship but does not reorder anything. That is exactly what the manager
 fixes: its export sorts the selection so every mod comes after what it requires.
 
-`WorkshopItems=` and `Mods=` do different jobs. `WorkshopItems=` is the list of
+#### C. `Mods=` and `WorkshopItems=` do different jobs
+
+They do different jobs. `WorkshopItems=` is the list of
 Steam item ids a server downloads; its order means nothing. `Mods=` is the list
 of mod ids the game loads, and its order is the one that matters.
 
@@ -73,20 +118,22 @@ The usual rule of thumb, in three tiers: frameworks and libraries first, content
 mods next, patches and overrides last, since a patch only works if it lands on
 top of what it patches.
 
+#### D. Where this comes from
+
 Sources for the above, since it is not documented by the developers:
 [pzmod.dev's load order guide](https://pzmod.dev/guides/project-zomboid-mod-load-order/)
 and the [Build 42 multiplayer mods guide](https://projectzomboid.wiki/multiplayer/mods/).
 Both are community documentation rather than official, and they agree with each
 other and with what the file stacking does on disk.
 
----
-
-## What the tool can and cannot tell you
+### Part III. What the tool can and cannot tell you
 
 Project Zomboid has no notion of two mods being "compatible". The engine loads
 mods in order and stacks their `media/` folders: when two mods ship the same
 file, the one loaded last wins, silently. There is no compatible/incompatible
 verdict to compute.
+
+#### A. What it detects
 
 Here is what pzmodmanager actually detects, most reliable first:
 
@@ -104,6 +151,8 @@ Here is what pzmodmanager actually detects, most reliable first:
 | A mod with no folder for the build you play | certain | medium |
 | The same texture, sound or model shipped twice | certain, cosmetic impact | low |
 
+#### B. What it cannot see
+
 What it does **not** see: purely logical incompatibilities, where two mods hook
 the same function cleanly but with contradictory assumptions. No static analysis
 catches those. The right source for them is the Lua errors in the game logs,
@@ -112,9 +161,9 @@ which name the offending file.
 A script collision is often **deliberate**: a rebalance mod exists precisely to
 overwrite another mod's values. The tool reports, it does not judge.
 
----
+## Chapter II. Getting started
 
-## Install
+### Part I. Install
 
 Python 3.10 or newer.
 
@@ -124,11 +173,7 @@ pip install -r requirements.txt
 
 Two dependencies: `rich` for the console output, `textual` for the interface.
 
----
-
-## Usage
-
-### A plain run
+### Part II. A plain run
 
 ```bash
 python -m pzmodmanager
@@ -168,13 +213,15 @@ Add `--open` to have the report opened in your browser as soon as it is written.
 Add `--quiet` to drop the progress lines. Add `--print-findings` if you really do
 want everything in the terminal.
 
-### The interactive interface
+### Part III. The interactive interface
 
 ```bash
 python -m pzmodmanager --tui
 ```
 
-A main menu: arrow keys to move, ENTER to select.
+#### A. The main menu
+
+Arrow keys to move, ENTER to select.
 
 ```
   Use arrow keys to move, ENTER to select
@@ -208,7 +255,9 @@ date and size of the last scan in the footer.
 - **Settings** edits everything the tool uses and saves it, so nothing has to be
   retyped on the command line next time.
 
-On the results screen the findings are on the left, the detail on the right, and
+#### B. The results screen
+
+The findings are on the left, the detail on the right, and
 the current line is in inverse video. Severity is read from the marker rather
 than from a colour, `[!!!]` critical, `[!! ]` high, `[!  ]` medium, `[ . ]` low.
 That is deliberate: it stays readable over SSH, on a black-and-white terminal, or
@@ -226,11 +275,15 @@ under a colour scheme that remaps the palette.
 The banner is 59 columns wide: below that terminal width it will be clipped. The
 rest of the interface adapts.
 
-### Managing which mods you run
+## Chapter III. Managing your mods
+
+### Part I. Choosing what you run
 
 ```bash
 python -m pzmodmanager --manage
 ```
+
+#### A. The manager screen
 
 A list of every installed mod with a checkbox, a search box, and a panel that
 revalidates the whole selection on every keystroke.
@@ -268,11 +321,15 @@ what would break if you dropped it, and its Workshop link:
 | u | unsubscribe the deselected mods from Steam, after confirmation |
 | ESC | back to the menu |
 
+#### B. Selecting and deselecting
+
 **Selecting a mod pulls in its dependencies automatically**, transitively, and
 says which ones it added. **Deselecting** never removes anything else: it tells
 you which selected mods still need what you just dropped, and leaves the choice
 to you. Incompatibilities, dependency cycles and serious file collisions are
 reported, never resolved behind your back.
+
+#### C. The export
 
 The export produces a load order sorted so every mod comes after what it
 requires, using your existing order to break ties so a working list is disturbed
@@ -285,6 +342,8 @@ WorkshopItems=2392709985;3728775267;...
 
 They are written next to the report, along with a plain mod list and a file of
 Workshop links, and the selection is remembered for next time.
+
+#### D. Without the interface
 
 The same thing works without the interface, which is handy for scripting a
 server:
@@ -301,7 +360,9 @@ dependency that an `--enable` pulled in. The resulting gap is reported rather
 than silently filled back, and exporting an unresolved selection prints a warning
 rather than refusing.
 
-**On unsubscribing.** There are two doors, and only one of them opens.
+#### E. On unsubscribing
+
+There are two doors, and only one of them opens.
 
 The Web API's `UnsubscribePublishedFile` is a publisher method on
 `partner.steam-api.com`. A publisher key is scoped to its own publisher group's
@@ -315,9 +376,11 @@ the section below.
 Deselecting a mod in the manager never touches your files or your subscriptions.
 It only changes the list.
 
-### Actually disabling a mod
+### Part II. Actually disabling a mod
 
 Worth spelling out, because the selection on its own changes nothing.
+
+#### A. The procedure
 
 1. Open the manager: `python -m pzmodmanager --manage`.
 2. Move to the mod and press SPACE. The checkbox empties and the problem panel
@@ -337,14 +400,16 @@ Worth spelling out, because the selection on its own changes nothing.
 Nothing in step 1 to 3 touches your files or your Steam subscriptions. Deselecting
 is entirely reversible: press SPACE again.
 
-**Deleting the files** is a separate question, and usually not what you want.
+#### B. Deleting the files is a different question
+
+That is a separate question, and usually not what you want.
 Steam re-downloads a Workshop mod you are still subscribed to, so removing the
 folder achieves nothing lasting. If you really want a mod gone from disk,
 unsubscribe on the Workshop: press `w` on it in the manager, which opens the item
 in the Steam client, and use the Unsubscribe button. The tool cannot do that for
 you, as explained above.
 
-### Taking the load order into account
+### Part III. Taking the load order into account
 
 Without an order the tool says "these three mods overlap". With it, it also says
 "and this one wins". That changes how the report reads.
@@ -353,11 +418,15 @@ Without an order the tool says "these three mods overlap". With it, it also says
 python -m pzmodmanager --order "%USERPROFILE%/Zomboid/Lua/saved_modlists.txt"
 ```
 
+#### A. Accepted formats
+
 Three formats are accepted and detected automatically: the client's
 `saved_modlists.txt`, a server `.ini` containing `Mods=`, or a plain text file
 with one mod id per line.
 
-**An honest caveat about `saved_modlists.txt`**: its format is not documented by
+#### B. An honest caveat about `saved_modlists.txt`
+
+Its format is not documented by
 the developers and has already changed between builds. The tool assumes a list
 name, then one id per line, with lists separated by a blank line. If the result
 looks wrong, mods out of order, list truncated, do not fight it: export your
@@ -370,7 +439,7 @@ To pick another:
 python -m pzmodmanager --order saved_modlists.txt --list-name "My solo run"
 ```
 
-### Mod images
+### Part IV. Mod images
 
 The report shows each mod's picture in the inventory. By default it links the
 Workshop preview, which keeps the file small and needs the Steam lookup to have
@@ -393,12 +462,54 @@ previews, and the manager says so instead of showing a picture.
 pip install Pillow
 ```
 
-### Changing your Steam subscriptions
+### Part V. Workshop links
+
+Every mod that came from the Workshop is linked to its page, in three places:
+
+- in the HTML report, the mod names are clickable, in the inventory, in the
+  most-involved table, and in the list of mods each finding names;
+- in the manager, the full URL sits in the side panel, and `w` opens the item in
+  the Steam client, where Unsubscribe lives;
+- on export, `pzmodmanager-workshop-links.txt` lists the page of every selected
+  mod in load order, which is what you hand to players who need to subscribe, or
+  keep for rebuilding the same list on another machine.
+
+Mods you installed by hand have no page, and are shown as plain text rather than
+a dead link. `--print-links` prints the same list to the terminal.
+
+## Chapter IV. Steam
+
+### Part I. The Workshop lookup
+
+By default the tool asks Steam about every Workshop mod it found, using the public
+`GetPublishedFileDetails` endpoint. No API key, no login, one POST for every
+hundred mods.
+
+That buys three things the disk cannot tell you:
+
+- the real Workshop title, so the report names mods the way the Workshop does;
+- the last update date, shown in the inventory, which is how you spot a mod
+  untouched since an older build;
+- the description, where authors state incompatibilities in prose because there
+  is no machine-readable field for it, and whether the item has been removed from
+  the Workshop entirely.
+
+Answers are cached for a day so repeated scans do not hammer the API. The lookup
+is entirely best effort: no network, a proxy in the way or a Steam outage never
+stops a scan, it just makes the report smaller. `--no-steam` turns it off,
+`--refresh-steam` ignores the cache.
+
+The incompatibility phrases are read from free text, so that finding says out
+loud that you should confirm it on the Workshop page before acting on it.
+
+### Part II. Changing your subscriptions
 
 Optional, off unless you set it up, and the one part of this tool that reaches
 outside and changes something you cannot undo from here.
 
-**What it needs.** The Steamworks SDK redistributable, `steam_api64.dll`. It is
+#### A. What it needs
+
+The Steamworks SDK redistributable, `steam_api64.dll`. It is
 not shipped with this tool: download the SDK yourself and either drop the library
 next to the tool or point at it.
 
@@ -410,6 +521,8 @@ steamworks_sdk_165/sdk/redistributable_bin/win64/steam_api64.dll
 
 Note `win64`, not the `steam_api.dll` sitting one level up: that one is 32 bit,
 and 64 bit Python cannot load it.
+
+#### B. Where to point it
 
 **Either form works.** Give the dll itself, or the folder holding it. Both of
 these are correct, and neither is better than the other:
@@ -423,11 +536,15 @@ Given a folder, the tool looks inside it for `steam_api64.dll`, then
 `steam_api.dll`. Given a file, it uses that file. Simplest of all, copy
 `steam_api64.dll` next to the tool and set nothing: it is found on its own.
 
-**Changing it takes effect on the next scan.** The subscription list is read once
+#### C. Changing it takes effect on the next scan
+
+The subscription list is read once
 per scan, not continuously, so after setting or correcting this path go back to
 the menu and run **Scan**. The settings screen says so when you change the value.
 Unsubscribing from the manager does not need a rescan first: it reads the library
 at the moment you confirm.
+
+#### D. Check it before you rely on it
 
 ```bash
 python -m pzmodmanager --steam-check --steam-sdk C:/steamworks_sdk/redistributable_bin/win64
@@ -447,7 +564,7 @@ That reports what it found and changes nothing:
 Run that first. If something does not work later, run it again: it is the whole
 diagnosis in six lines.
 
-**How to use it.**
+#### E. How to use it
 
 ```bash
 python -m pzmodmanager --unsubscribe SomeModId
@@ -469,7 +586,7 @@ the subscription count before and after.
 python -m pzmodmanager --manage --steam-sdk "C:/steamworks_sdk_165/sdk/redistributable_bin/win64"
 ```
 
-**Steam runs in a process of its own, and this is not decoration.**
+#### F. Steam runs in a process of its own, and this is not decoration
 
 The first version called the library straight from the interface's worker thread.
 It froze the screen, and the reason is worth knowing because it is invisible in a
@@ -503,7 +620,7 @@ Results are verified by reading your subscription list back afterwards and
 comparing, rather than trusting the asynchronous callback, so the tool tells you
 which ones actually went.
 
-**Three things to know before using it.**
+#### G. Three things to know before using it
 
 The process has to identify itself to Steam as an app, which here means claiming
 app id 108600. Your tool tells Steam it is Project Zomboid. Every third party
@@ -515,7 +632,9 @@ Unsubscribing removes the local files once Steam next shuts down. On the machine
 that also feeds your server, the mod is gone for you too, and a save that relied
 on it loses what it placed in the world.
 
-**How far this was actually verified.** Against SDK 1.65 specifically: loading the
+#### H. How far this was actually verified
+
+Against SDK 1.65 specifically: loading the
 library, resolving every symbol used, finding the UGC accessor, and calling init
 and reading back Steam's own error. Those all work. The signatures for
 `GetNumSubscribedItems`, `GetSubscribedItems`, `SubscribeItem` and
@@ -540,22 +659,34 @@ confirming that a library which never returns is killed at the deadline and
 reported rather than hanging the tool. That last one is the freeze, reproduced
 and then fixed.
 
-### Workshop links
+### Part III. Checking your subscriptions against the disk
 
-Every mod that came from the Workshop is linked to its page, in three places:
+Once the Steam SDK folder is set, every scan also reads your subscription list
+and compares it with what is on disk. That catches two things nothing else will.
 
-- in the HTML report, the mod names are clickable, in the inventory, in the
-  most-involved table, and in the list of mods each finding names;
-- in the manager, the full URL sits in the side panel, and `w` opens the item in
-  the Steam client, where Unsubscribe lives;
-- on export, `pzmodmanager-workshop-links.txt` lists the page of every selected
-  mod in load order, which is what you hand to players who need to subscribe, or
-  keep for rebuilding the same list on another machine.
+#### A. Installed but no longer subscribed
 
-Mods you installed by hand have no page, and are shown as plain text rather than
-a dead link. `--print-links` prints the same list to the terminal.
+Steam does not delete a mod's files when
+you unsubscribe: it waits until it next shuts down. Until then the game loads
+them exactly as before. This is why unsubscribing looks like it did nothing, and
+why a server can quietly keep running a mod that nobody can install any more.
 
-### Settings
+#### B. Subscribed but not installed
+
+Steam lists the item for your account but
+nothing arrived in the Workshop folder, usually a download that has not run or
+has failed. A server listing it in `WorkshopItems` will stall.
+
+Neither check says anything when the SDK is not configured or Steam is closed.
+An unknown subscription list is not the same as an empty one.
+
+This is also why unsubscribing from the manager **triggers a rescan**: the files
+are still there, so the mod list does not shrink, but it comes back flagged as
+still loading, which is the thing worth knowing before you start the game.
+
+## Chapter V. Configuration and output
+
+### Part I. Settings
 
 Everything the tool uses lives on one screen, and is saved between runs:
 
@@ -575,63 +706,23 @@ ENTER changes a value, `D` clears one, and changes are written straight away.
 What was detected on this machine is shown underneath, which is usually the
 thing you want to copy into a field above.
 
-**Saved now, read at the next scan.** Every setting in that table describes how
+#### A. Saved now, read at the next scan
+
+Every setting in that table describes how
 mods are read from disk, and mods are read during a scan. So changing one saves
 immediately but changes nothing you are looking at: go back to the menu and run
 **Scan**. The screen says so on the line under the table each time you change a
 value, because this is the sort of thing that is obvious once and confusing
 every other time.
 
-**Command line arguments still win.** A saved setting is a default, not a lock.
+#### B. Command line arguments still win
+
+A saved setting is a default, not a lock.
 Passing `--build 42.19` runs with that and leaves the saved value alone. The tool
 works out which options you actually typed rather than treating an argparse
 default as a choice.
 
-### Checking your subscriptions against the disk
-
-Once the Steam SDK folder is set, every scan also reads your subscription list
-and compares it with what is on disk. That catches two things nothing else will.
-
-**Installed but no longer subscribed.** Steam does not delete a mod's files when
-you unsubscribe: it waits until it next shuts down. Until then the game loads
-them exactly as before. This is why unsubscribing looks like it did nothing, and
-why a server can quietly keep running a mod that nobody can install any more.
-
-**Subscribed but not installed.** Steam lists the item for your account but
-nothing arrived in the Workshop folder, usually a download that has not run or
-has failed. A server listing it in `WorkshopItems` will stall.
-
-Neither check says anything when the SDK is not configured or Steam is closed.
-An unknown subscription list is not the same as an empty one.
-
-This is also why unsubscribing from the manager **triggers a rescan**: the files
-are still there, so the mod list does not shrink, but it comes back flagged as
-still loading, which is the thing worth knowing before you start the game.
-
-### The Steam Workshop lookup
-
-By default the tool asks Steam about every Workshop mod it found, using the public
-`GetPublishedFileDetails` endpoint. No API key, no login, one POST for every
-hundred mods.
-
-That buys three things the disk cannot tell you:
-
-- the real Workshop title, so the report names mods the way the Workshop does;
-- the last update date, shown in the inventory, which is how you spot a mod
-  untouched since an older build;
-- the description, where authors state incompatibilities in prose because there
-  is no machine-readable field for it, and whether the item has been removed from
-  the Workshop entirely.
-
-Answers are cached for a day so repeated scans do not hammer the API. The lookup
-is entirely best effort: no network, a proxy in the way or a Steam outage never
-stops a scan, it just makes the report smaller. `--no-steam` turns it off,
-`--refresh-steam` ignores the cache.
-
-The incompatibility phrases are read from free text, so that finding says out
-loud that you should confirm it on the Workshop page before acting on it.
-
-### The log
+### Part II. The log
 
 Every run writes a log: the paths it probed, the mods it found, the rules it ran,
 and every error it swallowed to keep going. When a scan returns something
@@ -649,7 +740,7 @@ By default it goes next to your user data, not into the current folder:
 detailed. Nothing from the log ever reaches the terminal, so it never fights with
 the progress display.
 
-### Other useful options
+### Part III. Other useful options
 
 | Option | Effect |
 |---|---|
@@ -683,9 +774,9 @@ the progress display.
 
 `--help` lists everything.
 
----
+## Chapter VI. Building and extending
 
-## Building a Windows executable
+### Part I. Building a Windows executable
 
 ```bash
 pip install pyinstaller
@@ -725,7 +816,7 @@ spec solves is not platform specific.
 Expect roughly 40 MB, and expect an antivirus to look twice at any PyInstaller
 executable.
 
-## Code layout
+### Part II. Code layout
 
 ```
 pzmodmanager/
@@ -765,9 +856,7 @@ Run the tests:
 python tests/test_pzmodmanager.py
 ```
 
----
-
-## Adding a rule
+### Part III. Adding a rule
 
 A rule is a function taking an `AnalysisContext` and returning `Finding` objects.
 Write it in `analyzers.py` and add it to the `ALL_RULES` list, the console, HTML,
@@ -777,9 +866,7 @@ Two natural next steps: detecting cell overlap between map mods (reading the
 `<x>_<y>.lotheader` files), and reading the game logs to tie a Lua error back to
 the mod that caused it.
 
----
-
-## A note on the font
+### Part IV. A note on the font
 
 The report can use **Pixter Granular** by Matt Grey, or any other TTF or OTF you
 point at with `--font`. Drop `pixter-granular.ttf` next to the tool and it is
