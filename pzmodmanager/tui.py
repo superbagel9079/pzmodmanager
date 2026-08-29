@@ -175,13 +175,13 @@ class MenuScreen(Screen):
     """
 
     BINDINGS = [
-        Binding("q", "quit_app", "Quit"),
+        Binding("q,Q", "quit_app", "Quit"),
         Binding("escape", "quit_app", "Quit"),
     ]
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "Use arrow keys to move, ENTER to select\nPress 'Q' to quit",
+            "Use arrow keys to move, ENTER to select\nPress 'q' to quit",
             id="hint",
         )
         yield Container(BannerHeader(), id="bannerbox")
@@ -437,8 +437,8 @@ class ResultsScreen(Screen):
         Binding("3", "filter_medium", "Medium"),
         Binding("4", "filter_low", "Low"),
         Binding("5", "filter_info", "Info"),
-        Binding("r", "open_report", "Report"),
-        Binding("m", "manage", "Manage"),
+        Binding("r,R", "open_report", "Report"),
+        Binding("m,M", "manage", "Manage"),
     ]
 
     def __init__(self, scan: StoredScan) -> None:
@@ -450,7 +450,7 @@ class ResultsScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static(
             "Arrow keys to move, 1-5 to filter by severity, 0 for all\n"
-            "'R' opens the HTML report, 'M' manages the mods, ESC returns to the menu",
+            "'r' opens the HTML report, 'm' manages the mods, ESC returns to the menu",
             id="hint",
         )
         yield Static("", id="summary")
@@ -495,7 +495,7 @@ class ResultsScreen(Screen):
         self.query_one("#summary", Static).update(self._summary())
         report = getattr(self.app, "report_written", None) or self.scan.report_path
         self.query_one("#footer", Static).update(
-            f"'R' opens the report: {report}" if report else "no report written"
+            f"'r' opens the report: {report}" if report else "no report written"
         )
         if self.rows:
             self.show_detail(self.rows[0])
@@ -599,20 +599,22 @@ class ModCheckApp(App):
         steam_sdk: Path | None = None,
         settings=None,
         settings_path: Path | None = None,
+        cli_overrides=None,
     ) -> None:
         super().__init__()
         self.selection_path = selection_path
         self.open_manager = open_manager
-        self.steam_sdk = steam_sdk
         from .settings import Settings
 
         self.settings = settings or Settings()
         self.settings_path = settings_path
-        # The settings screen can change the SDK folder, so the manager asks the
-        # app rather than holding its own copy.
-        if self.steam_sdk is None:
-            self.steam_sdk = self.settings.steam_sdk_path
-        self.scan_options = options
+        # What the command line actually said, kept apart from the saved
+        # settings. A typed option must keep winning for the whole session, and
+        # everything else must be read fresh, because the settings screen can
+        # change any of it between two scans.
+        self.cli_options = options
+        self.cli_overrides = set(cli_overrides or ())
+        self._steam_sdk_override = steam_sdk if "steam_sdk" in self.cli_overrides else None
         self.log_path = log_path
         self.report_path = Path(report_path or "pzmodmanager-report.html")
         self.store_path = store_path
@@ -620,6 +622,46 @@ class ModCheckApp(App):
         # first-run menu into one offering "Last results" and "Rescan".
         self.stored: StoredScan | None = store.load(store_path)
         self.report_written: Path | None = None
+
+    # ------------------------------------------------------------- live state --
+    #
+    # These two used to be plain attributes set once in __init__, and that was a
+    # bug with two faces: a scan started after a settings change still ran the
+    # values from launch, and the unsubscribe screen still looked for the Steam
+    # library where it was at launch, which is why it reported none after the
+    # path had just been filled in. Nothing may cache what the settings screen
+    # can change. Both are read at the moment they are used.
+
+    @property
+    def steam_sdk(self) -> Path | None:
+        """Where the Steam library is, as of right now."""
+        if self._steam_sdk_override is not None:
+            return self._steam_sdk_override
+        return self.settings.steam_sdk_path
+
+    @property
+    def scan_options(self) -> ScanOptions:
+        """The options a scan started now should use.
+
+        Built from the saved settings every time, then overwritten by whatever
+        was typed on the command line, so a typed option still wins without
+        freezing the rest alongside it.
+        """
+        options = ScanOptions(
+            extra_paths=[Path(p).expanduser() for p in self.settings.extra_paths],
+            use_defaults=self.settings.use_defaults,
+            build=self.settings.build,
+            parse_scripts=self.settings.parse_scripts,
+            order_path=self.settings.order_path_or_none,
+            list_name=self.cli_options.list_name,
+            only_enabled=self.settings.only_enabled,
+            use_steam=self.settings.use_steam,
+            steam_cache=self.cli_options.steam_cache,
+            steam_sdk=self.settings.steam_sdk_path,
+        )
+        for name in self.cli_overrides:
+            setattr(options, name, getattr(self.cli_options, name))
+        return options
 
     def on_mount(self) -> None:
         self.title = "pzmodmanager"
@@ -648,6 +690,7 @@ def run_tui(
     steam_sdk: Path | None = None,
     settings=None,
     settings_path: Path | None = None,
+    cli_overrides=None,
 ) -> None:
     ModCheckApp(
         options,
@@ -659,4 +702,5 @@ def run_tui(
         steam_sdk,
         settings,
         settings_path,
+        cli_overrides,
     ).run()

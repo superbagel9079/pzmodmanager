@@ -108,7 +108,7 @@ class ExportScreen(ModalScreen):
 
     BINDINGS = [
         Binding("escape", "dismiss_screen", "Back"),
-        Binding("q", "dismiss_screen", "Back"),
+        Binding("q,Q", "dismiss_screen", "Back"),
     ]
 
     CSS = _RETRO + """
@@ -146,14 +146,14 @@ class ManageScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Menu"),
         Binding("space", "toggle", "Toggle"),
-        Binding("a", "select_all", "All"),
-        Binding("n", "select_none", "None"),
-        Binding("o", "select_from_order", "From order"),
-        Binding("d", "add_dependencies", "Deps"),
-        Binding("w", "open_workshop", "Workshop"),
-        Binding("p", "open_problem_link", "Problem link"),
-        Binding("e", "export", "Export"),
-        Binding("u", "unsubscribe", "Unsubscribe"),
+        Binding("a,A", "select_all", "All"),
+        Binding("n,N", "select_none", "None"),
+        Binding("o,O", "select_from_order", "From order"),
+        Binding("d,D", "add_dependencies", "Deps"),
+        Binding("w,W", "open_workshop", "Workshop"),
+        Binding("p,P", "open_problem_link", "Problem link"),
+        Binding("e,E", "export", "Export"),
+        Binding("u,U", "unsubscribe", "Unsubscribe"),
         Binding("slash", "focus_search", "Search"),
     ]
 
@@ -433,8 +433,13 @@ class ManageScreen(Screen):
             self.refresh_table()
             return
 
+        # Read from the app, not from the copy handed over when this screen was
+        # built. The settings screen can set the SDK path after the manager is
+        # already open, and looking at the stale copy is what made this report
+        # "library not found" on a path that was right.
+        configured = getattr(self.app, "steam_sdk", None) or self.steam_sdk
         self.app.push_screen(
-            UnsubscribeScreen(targets, find_library(self.steam_sdk)),
+            UnsubscribeScreen(targets, find_library(configured)),
             self._after_unsubscribe,
         )
 

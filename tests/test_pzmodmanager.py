@@ -186,8 +186,9 @@ def test_cli_routing(tmp: Path) -> None:
 
     def fake_run_tui(options, log_path=None, report_path=None, store_path=None,
                      selection_path=None, open_manager=False, steam_sdk=None,
-                     settings=None, settings_path=None):
+                     settings=None, settings_path=None, cli_overrides=None):
         seen.update(opened=True, open_manager=open_manager, steam_sdk=steam_sdk,
+                    cli_overrides=cli_overrides,
                     settings=settings)
         return None
 
@@ -202,7 +203,7 @@ def test_cli_routing(tmp: Path) -> None:
         cli.main(["--manage", "--state", state, "--steam-sdk", str(tmp)])
         check(seen.get("opened") is True, "cli: --manage opens the interface")
         check(seen.get("open_manager") is True, "cli: --manage lands on the manager")
-        check(str(seen.get("steam_sdk")) == str(tmp),
+        check(seen.get("steam_sdk") == tmp,
               "cli: --steam-sdk reaches the interface, so unsubscribing works there")
 
         seen.clear()
@@ -239,7 +240,8 @@ def test_settings(tmp: Path) -> None:
     options = cli.options_from_args(parser.parse_args([]), back, cli.explicitly_given([]))
     check(options.build == "42.15", "settings: a saved value is used when nothing is typed")
     check(options.use_steam is False, "settings: a saved false is respected")
-    check(str(options.steam_sdk) == "/some/sdk", "settings: the SDK path reaches the scan")
+    check(options.steam_sdk == Path("/some/sdk"),
+          "settings: the SDK path reaches the scan")
 
     argv = ["--build", "42.19"]
     options = cli.options_from_args(parser.parse_args(argv), back, cli.explicitly_given(argv))
@@ -343,6 +345,80 @@ def test_steam_bridge(tmp: Path) -> None:
           "steam: several UGC accessor versions are probed, not one guessed")
 
 
+def test_settings_are_live() -> None:
+    """Nothing the settings screen can change may be cached at launch.
+
+    The regression this guards: both the scan options and the Steam library path
+    were read once in __init__. Changing the SDK path on the settings screen then
+    did nothing at all, the manager still reported "library not found" on a path
+    that was right, and a rescan after any settings change silently reran the old
+    values. The interface said "run a new scan for this to take effect", and that
+    was untrue.
+    """
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    live = Settings(steam_sdk="", build="42", use_steam=True)
+    app = ModCheckApp(ScanOptions(build="42"), settings=live, cli_overrides=set())
+
+    check(app.steam_sdk is None, "live: no SDK reported before one is set")
+    live.steam_sdk = str(Path("/somewhere/win64/steam_api64.dll"))
+    check(app.steam_sdk is not None and "win64" in str(app.steam_sdk),
+          "live: setting the SDK path is visible immediately, with no relaunch")
+
+    check(app.scan_options.build == "42", "live: the scan starts from the saved build")
+    live.build = "42.15"
+    check(app.scan_options.build == "42.15",
+          "live: changing the build reaches the next scan")
+    live.use_steam = False
+    check(app.scan_options.use_steam is False,
+          "live: toggling the Workshop lookup reaches the next scan")
+    check(app.scan_options.steam_sdk is not None,
+          "live: the scan gets the SDK path too, for the subscription check")
+
+    # What was typed on the command line must still win for the whole session.
+    pinned = ModCheckApp(
+        ScanOptions(build="41", steam_sdk=Path("/from/cli")),
+        settings=Settings(build="42", steam_sdk="/from/settings"),
+        steam_sdk=Path("/from/cli"),
+        cli_overrides={"build", "steam_sdk"},
+    )
+    check(pinned.scan_options.build == "41",
+          "live: --build still beats the saved setting")
+    check(str(pinned.steam_sdk) == str(Path("/from/cli")),
+          "live: --steam-sdk still beats the saved setting")
+    check(pinned.scan_options.use_defaults is True,
+          "live: an option you did not type is still read from the settings")
+
+
+def test_key_hints_match_bindings() -> None:
+    """Every key named in the on screen help must be a key that is bound.
+
+    They had drifted: the help said 'Q', 'R', 'M' and 'D' while the bindings were
+    lower case, so the keys shown did nothing if you took them literally.
+    """
+    import re
+
+    from pzmodmanager import manager_screen, settings_screen, tui, unsubscribe_screen
+
+    for module in (tui, manager_screen, settings_screen, unsubscribe_screen):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        bound = set()
+        for keys in re.findall(r'Binding\("([^"]+)"', source):
+            bound.update(k.strip() for k in keys.split(","))
+        # Drop f-string expressions first. A pluralisation like {'S' if count > 1
+        # else ''} is quoted the same way a key hint is, and is not one.
+        prose = re.sub(r"\{[^{}]*\}", "", source)
+        # A key hint is 'x' followed by what it does, or spelled out as press 'x'.
+        shown = set(re.findall(r"[Pp]ress '([A-Za-z0-9])'", prose))
+        shown |= set(re.findall(r"'([A-Za-z0-9])' (?:opens|exports|adds|all|none|from|to|manages|searches|unsubscribes|clears)", prose))
+        # A screen may legitimately name no letter keys: the unsubscribe screen
+        # only uses arrows, ENTER and ESC, on purpose.
+        for key in sorted(shown):
+            check(key in bound,
+                  f"keys: '{key}' shown in {Path(module.__file__).name} is really bound")
+
+
 def test_steam_child_process(tmp: Path) -> None:
     """The Steam work must happen in a child process, and must never hang us.
 
@@ -408,6 +484,21 @@ def test_logging(tmp: Path) -> None:
     return log_path
 
 
+def close_log_handlers() -> None:
+    """Detach and close every file handler the tool's logging set up."""
+    import logging
+
+    for logger in [logging.getLogger()] + [
+        logging.getLogger(name) for name in list(logging.root.manager.loggerDict)
+    ]:
+        for handler in list(getattr(logger, "handlers", [])):
+            try:
+                handler.close()
+            except Exception:
+                pass
+            logger.removeHandler(handler)
+
+
 def main() -> int:
     test_script_parser()
     test_branch_selection()
@@ -419,6 +510,8 @@ def main() -> int:
         test_store(tmp)
         test_settings(tmp)
         test_steam_bridge(tmp)
+        test_settings_are_live()
+        test_key_hints_match_bindings()
         test_steam_child_process(tmp)
         test_steam_output_capture()
         test_cli_routing(tmp)
@@ -603,6 +696,12 @@ def main() -> int:
         check("Scan starting" in log_text, "logging: the scan start is recorded")
         check("Discovery finished" in log_text, "logging: discovery is recorded")
         check("Analysis finished" in log_text, "logging: analysis is recorded")
+
+        # Windows refuses to delete an open file, and the log handler still holds
+        # test.log, so the temporary folder cannot be cleaned up until logging
+        # lets go of it. On Linux the unlink would simply have succeeded and this
+        # would never have shown up.
+        close_log_handlers()
 
     print()
     if FAILURES:

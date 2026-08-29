@@ -207,6 +207,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 _SEV_BY_LABEL = {s.label: s for s in Severity}
 
+# Which ScanOptions field each command line option decides. Used to tell the
+# interface what to keep pinned, so everything else can be reread from the
+# settings between two scans instead of being frozen at launch.
+_OPTION_TO_FIELD = {
+    "path": "extra_paths",
+    "no_auto": "use_defaults",
+    "build": "build",
+    "no_scripts": "parse_scripts",
+    "order": "order_path",
+    "only_enabled": "only_enabled",
+    "no_steam": "use_steam",
+    "steam_sdk": "steam_sdk",
+}
+
+
+def scan_option_overrides(given: set[str]) -> set[str]:
+    """The ScanOptions fields the user pinned by typing an option."""
+    return {field for option, field in _OPTION_TO_FIELD.items() if option in given}
+
 
 def _force_utf8_console() -> None:
     """The Windows console defaults to cp1252, which chokes on box characters."""
@@ -329,6 +348,11 @@ def main(argv: list[str] | None = None) -> int:
             steam_sdk=scan_options.steam_sdk,
             settings=settings,
             settings_path=settings_path,
+            # Which ScanOptions fields came from the command line. The interface
+            # rebuilds everything else from the settings before each scan, so a
+            # change made on the settings screen is actually used, and only what
+            # you typed stays pinned for the session.
+            cli_overrides=scan_option_overrides(given),
         )
         return 0
 

@@ -103,7 +103,7 @@ class UnsubscribeScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
-        Binding("q", "cancel", "Cancel"),
+        Binding("q,Q", "cancel", "Cancel"),
     ]
 
     def __init__(self, targets: list[ModRef], library: Path | None) -> None:
@@ -224,7 +224,7 @@ class UnsubscribeRunScreen(Screen):
 
     CSS = RETRO_CSS + _SCREEN_CSS
 
-    BINDINGS = [Binding("escape", "back", "Back"), Binding("q", "back", "Back")]
+    BINDINGS = [Binding("escape", "back", "Back"), Binding("q,Q", "back", "Back")]
 
     def __init__(self, targets: list[ModRef], library: Path) -> None:
         super().__init__()

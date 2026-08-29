@@ -116,8 +116,8 @@ class SettingsScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "back", "Back"),
-        Binding("q", "back", "Back"),
-        Binding("d", "clear_value", "Clear"),
+        Binding("q,Q", "back", "Back"),
+        Binding("d,D", "clear_value", "Clear"),
     ]
 
     def __init__(self, settings: Settings, settings_path: Path | None = None) -> None:
@@ -131,7 +131,7 @@ class SettingsScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "Arrow keys to move, ENTER to change a value, 'D' to clear one\n"
+            "Arrow keys to move, ENTER to change a value, 'd' to clear one\n"
             "Saved straight away, but read by the next scan: change something here,"
             " then run Scan. ESC returns to the menu.",
             id="hint",
