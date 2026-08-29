@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+build/
+dist/
+.venv/
+venv/
+*.spec.bak
+
+# Output the tool writes next to itself
+pzmodmanager-report.html
+pzmodmanager-modlist.txt
+pzmodmanager-server.ini.txt
+pzmodmanager-workshop-links.txt
+pzmodmanager.log
+settings.json
+
+# Left over from the old name, deleted by cleanup-old-name.ps1
+pzmodcheck/
+pzmodcheck.spec
+run-pzmodcheck.py
+pzmodcheck-*.html
+pzmodcheck-*.txt
+tests/test_pzmodcheck.py
+
+# Never commit the Steamworks redistributable: it is Valve's to distribute,
+# not ours, and the tool is written so you supply your own copy.
+steam_appid.txt
+steam_api64.dll
+steam_api.dll
+libsteam_api.so
+libsteam_api.dylib

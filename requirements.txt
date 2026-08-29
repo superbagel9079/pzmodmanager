@@ -1,0 +1,11 @@
+rich>=13.7
+textual>=0.60
+Pillow>=10.0
+
+# Pillow draws the mod posters: the picture in the manager side panel, and the
+# embedded thumbnails when the report is built with --embed-images. The rest of
+# the tool works without it, so if the install gives you trouble you can remove
+# this line and everything except the images keeps running.
+
+# For building an executable, not needed to run the tool:
+#     pip install pyinstaller
