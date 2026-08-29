@@ -26,6 +26,7 @@ SETTINGS_VERSION = 1
 class Settings:
     """What the tool remembers about how you want it to run."""
 
+    data_dir: str = ""           # where the scan, selection, cache and log go
     steam_sdk: str = ""          # folder or file holding steam_api64.dll
     build: str = "42"            # target game version, decides the media branch
     use_defaults: bool = True    # probe the usual Steam and Zomboid locations
@@ -86,6 +87,10 @@ class Settings:
     # -------------------------------------------------------------- helpers --
 
     @property
+    def data_dir_path(self) -> Path | None:
+        return Path(self.data_dir).expanduser() if self.data_dir else None
+
+    @property
     def steam_sdk_path(self) -> Path | None:
         return Path(self.steam_sdk).expanduser() if self.steam_sdk else None
 
@@ -104,6 +109,11 @@ class Settings:
 
 
 def default_settings_path() -> Path:
-    from .store import state_dir
+    """Always the per-user location, never the configurable data folder.
 
-    return state_dir() / SETTINGS_NAME
+    settings.json is the file that says where everything else goes, so it cannot
+    itself be moved by a setting: there would be nowhere to look it up from.
+    """
+    from .store import config_dir
+
+    return config_dir() / SETTINGS_NAME

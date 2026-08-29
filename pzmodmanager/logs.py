@@ -26,9 +26,16 @@ _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 def default_log_path() -> Path:
     """Where the log goes when the user does not say.
 
-    Next to the user's data rather than in the current directory, so running the
-    tool from a read-only or unexpected working directory still works.
+    Next to the user's other data rather than in the current directory, so
+    running the tool from a read-only or unexpected working directory still
+    works, and so the log follows the data folder when that is moved.
     """
+    try:
+        from .store import state_dir
+
+        return state_dir() / DEFAULT_LOG_NAME
+    except Exception:
+        pass
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:

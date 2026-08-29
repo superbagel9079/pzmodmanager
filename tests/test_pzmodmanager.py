@@ -345,6 +345,49 @@ def test_steam_bridge(tmp: Path) -> None:
           "steam: several UGC accessor versions are probed, not one guessed")
 
 
+def test_data_dir(tmp: Path) -> None:
+    """The state files can be moved, and settings.json deliberately cannot.
+
+    Anything that says where files go has to be findable without knowing where
+    files go. settings.json is that file, so it stays in the per-user location
+    while everything it points at is free to move. If this ever changes, the tool
+    will have nowhere to read its own configuration from.
+    """
+    from pzmodmanager.logs import default_log_path
+    from pzmodmanager.settings import Settings, default_settings_path
+
+    fixed_settings = default_settings_path()
+    target = tmp / "chosen"
+
+    store.set_data_dir(target)
+    try:
+        check(store.state_dir() == target, "data dir: the state folder moves")
+        check(store.default_store_path().parent == target,
+              "data dir: the saved scan follows")
+        check(store.default_selection_path().parent == target,
+              "data dir: the selection follows")
+        check(store.default_steam_cache_path().parent == target,
+              "data dir: the Workshop cache follows")
+        check(default_log_path().parent == target, "data dir: the log follows")
+        check(default_settings_path() == fixed_settings,
+              "data dir: settings.json stays put, or nothing could find it")
+        check(store.config_dir() != target,
+              "data dir: the config folder is not the data folder")
+
+        # A round trip through the file, since this is what the screen writes.
+        saved = Settings(data_dir=str(target))
+        path = tmp / "s.json"
+        saved.save(path)
+        check(Settings.load(path).data_dir_path == target,
+              "data dir: the setting survives being saved and read back")
+    finally:
+        # A module level override would leak into every later test.
+        store.set_data_dir(None)
+
+    check(store.state_dir() != target, "data dir: clearing it restores the default")
+    check(Settings().data_dir == "", "data dir: empty by default, nothing moves")
+
+
 def test_settings_are_live() -> None:
     """Nothing the settings screen can change may be cached at launch.
 
@@ -510,6 +553,7 @@ def main() -> int:
         test_store(tmp)
         test_settings(tmp)
         test_steam_bridge(tmp)
+        test_data_dir(tmp)
         test_settings_are_live()
         test_key_hints_match_bindings()
         test_steam_child_process(tmp)

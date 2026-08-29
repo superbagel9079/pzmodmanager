@@ -192,7 +192,12 @@ def build_parser() -> argparse.ArgumentParser:
              "or an answer at the prompt",
     )
 
-    logging_group = parser.add_argument_group("logging")
+    logging_group = parser.add_argument_group("logging and data")
+    logging_group.add_argument(
+        "--data-dir", metavar="FOLDER",
+        help="where the saved scan, the selection, the Workshop cache and the log "
+             "are kept; settings.json stays in the per-user location",
+    )
     logging_group.add_argument("--log", metavar="FILE", help="path of the log file")
     logging_group.add_argument(
         "--log-level", choices=["debug", "info", "warning", "error"], default="info",
@@ -305,11 +310,21 @@ def main(argv: list[str] | None = None) -> int:
 
     _force_utf8_console()
     args = build_parser().parse_args(argv)
-    log_path = setup_logging(Path(args.log) if args.log else None, args.log_level)
 
+    # Order matters here. The data folder decides where the log, the saved scan,
+    # the selection and the Workshop cache go, so it has to be settled before
+    # anything works out a path. Logging used to start first, which would have
+    # put the log in the old place every time.
     settings_path = default_settings_path()
     settings = Settings.load(settings_path)
     given = explicitly_given(argv)
+    store.set_data_dir(
+        Path(args.data_dir).expanduser()
+        if "data_dir" in given and args.data_dir
+        else settings.data_dir_path
+    )
+
+    log_path = setup_logging(Path(args.log) if args.log else None, args.log_level)
 
     state_path = Path(args.state).expanduser() if args.state else store.default_store_path()
     selection_path = (

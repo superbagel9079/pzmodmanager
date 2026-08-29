@@ -25,6 +25,9 @@ from .tui import RETRO_CSS
 
 # name, label, kind, help
 ROWS = [
+    ("data_dir", "Data folder", "path",
+     "Where the last scan, your selection, the Workshop cache and the log are "
+     "kept. Empty means the usual per-user folder. Takes effect on the next launch."),
     ("steam_sdk", "Steam SDK", "path",
      "steam_api64.dll itself, or the folder holding it. Both work. "
      "Changing this only takes effect on the next scan."),
@@ -53,6 +56,11 @@ NEEDS_RESCAN = {
     "order_path", "use_steam", "parse_scripts", "only_enabled",
 }
 RESCAN_NOTE = "  ..  run a new scan for this to take effect"
+
+# The data folder is resolved once, at startup, because the log file is opened
+# before anything else happens. A rescan cannot move it; only a relaunch can.
+NEEDS_RESTART = {"data_dir"}
+RESTART_NOTE = "  ..  restart the tool for this to take effect"
 
 _OWN_CSS = """
 #settings-area {
@@ -107,6 +115,13 @@ DataTable > .datatable--hover {
     background: #000000;
 }
 """
+
+
+def _note(name: str) -> str:
+    """What the user has to do for this change to actually apply."""
+    if name in NEEDS_RESTART:
+        return RESTART_NOTE
+    return RESCAN_NOTE if name in NEEDS_RESCAN else ""
 
 
 class SettingsScreen(Screen):
@@ -202,6 +217,10 @@ class SettingsScreen(Screen):
             )
         else:
             lines.append("  Steam SDK   not set, subscriptions cannot be read or changed")
+        from .store import config_dir, state_dir
+
+        lines.append(f"  Data folder {state_dir()}")
+        lines.append(f"  Settings    {config_dir()}  (this one never moves)")
         self.query_one("#detected", Static).update("\n".join(lines))
 
     # --------------------------------------------------------------- editing --
@@ -221,10 +240,7 @@ class SettingsScreen(Screen):
         name, label, kind, _help = row
         if kind == "bool":
             setattr(self.settings, name, not getattr(self.settings, name))
-            self.save(
-                "toggled " + label.lower()
-                + (RESCAN_NOTE if name in NEEDS_RESCAN else "")
-            )
+            self.save("toggled " + label.lower() + _note(name))
             return
 
         self.editing = name
@@ -246,7 +262,7 @@ class SettingsScreen(Screen):
         else:
             setattr(self.settings, name, text)
         self.stop_editing()
-        self.save(f"saved {name}" + (RESCAN_NOTE if name in NEEDS_RESCAN else ""))
+        self.save(f"saved {name}" + _note(name))
 
     def action_clear_value(self) -> None:
         row = self.current_row()
@@ -256,9 +272,7 @@ class SettingsScreen(Screen):
         if kind == "bool":
             return
         setattr(self.settings, name, [] if kind == "paths" else "")
-        self.save(
-            f"cleared {label.lower()}" + (RESCAN_NOTE if name in NEEDS_RESCAN else "")
-        )
+        self.save(f"cleared {label.lower()}" + _note(name))
 
     def stop_editing(self) -> None:
         self.editing = None

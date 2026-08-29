@@ -47,8 +47,9 @@ Client-side tool. Targets Build 42 by default; the Build 41 layout is handled to
 **[Chapter V. Configuration and output](#chapter-v-configuration-and-output)**
 
 - [Part I. Settings](#part-i-settings)
-- [Part II. The log](#part-ii-the-log)
-- [Part III. Other useful options](#part-iii-other-useful-options)
+- [Part II. Where the tool keeps your data](#part-ii-where-the-tool-keeps-your-data)
+- [Part III. The log](#part-iii-the-log)
+- [Part IV. Other useful options](#part-iv-other-useful-options)
 
 **[Chapter VI. Building and extending](#chapter-vi-building-and-extending)**
 
@@ -692,6 +693,7 @@ Everything the tool uses lives on one screen, and is saved between runs:
 
 | Setting | What it does |
 |---|---|
+| Data folder | where the saved scan, selection, cache and log are kept |
 | Steam SDK | `steam_api64.dll` itself, or the folder holding it: both work |
 | Target build | `42` for the newest 42.x branch, `42.15` to pin a client |
 | Auto-detect locations | probe the usual Steam and Zomboid folders |
@@ -722,7 +724,55 @@ Passing `--build 42.19` runs with that and leaves the saved value alone. The too
 works out which options you actually typed rather than treating an argparse
 default as a choice.
 
-### Part II. The log
+### Part II. Where the tool keeps your data
+
+Five files, none of them in the folder the tool runs from by default:
+
+| File | What it is |
+|---|---|
+| `last-scan.json` | the saved scan, reopened by **Last results** |
+| `selection.json` | the mods you ticked in the manager |
+| `settings.json` | the settings screen |
+| `workshop-cache.json` | Workshop answers, kept for a day |
+| `pzmodmanager.log` | the log |
+
+| System | Location |
+|---|---|
+| Windows | `%LOCALAPPDATA%\pzmodmanager` |
+| macOS | `~/Library/Application Support/pzmodmanager` |
+| Linux | `~/.local/state/pzmodmanager` |
+
+They live outside the project on purpose: they are yours, not the program's, and
+they should survive cloning the repository somewhere else, deleting `dist/`, or
+rebuilding. That is why a fresh clone still opens on **Last results** rather than
+on the first-run menu.
+
+#### A. Moving them
+
+Set **Data folder** on the settings screen, or pass `--data-dir`, and the saved
+scan, the selection, the Workshop cache and the log all move there. Point it at
+the project folder if you would rather keep everything in one place.
+
+```bash
+python -m pzmodmanager --data-dir .
+```
+
+The `.gitignore` already covers all four, so keeping them next to the code does
+not put your scan or your mod selection in the repository.
+
+**It takes effect on the next launch, not the next scan.** The log file is opened
+before anything else happens, so the folder is settled once at startup. The
+settings screen says so rather than promising a rescan will do it.
+
+#### B. Except settings.json, which cannot move
+
+It stays in the per-user location whatever the Data folder says, and that is not
+an oversight. `settings.json` is the file that says where everything else goes.
+If a setting could move it, the tool would have to read the file to find out
+where the file is. Something has to be findable without configuration, and that
+is the one.
+
+### Part III. The log
 
 Every run writes a log: the paths it probed, the mods it found, the rules it ran,
 and every error it swallowed to keep going. When a scan returns something
@@ -740,7 +790,7 @@ By default it goes next to your user data, not into the current folder:
 detailed. Nothing from the log ever reaches the terminal, so it never fights with
 the progress display.
 
-### Part III. Other useful options
+### Part IV. Other useful options
 
 | Option | Effect |
 |---|---|
@@ -758,6 +808,7 @@ the progress display.
 | `--refresh-steam` | ignore the Workshop cache |
 | `--font FILE` | embed a TTF in the report for headings and figures |
 | `--embed-images` | inline mod posters in the report instead of linking previews |
+| `--data-dir FOLDER` | where the scan, selection, cache and log are kept |
 | `--state FILE` | where the last scan is saved |
 | `--manage` | open the mod manager |
 | `--enable ID` / `--disable ID` | change the saved selection without the interface |

@@ -33,7 +33,34 @@ STORE_VERSION = 2
 _SEVERITY_BY_LABEL = {s.label: s for s in Severity}
 
 
+# Where the saved scan, the selection, the Workshop cache and the log go. Empty
+# means the per-user location below. The settings screen writes it, and cli sets
+# it once at startup before anything reads a path.
+#
+# One thing this deliberately does not move: settings.json itself. A setting
+# cannot describe where it is stored, or nothing would know where to look for it,
+# so the settings file stays in the per-user location and everything it points at
+# can move. That is the only exception, and config_dir is what enforces it.
+_data_dir: Path | None = None
+
+
+def set_data_dir(path) -> None:
+    """Point the state files somewhere else, or back at the default with None."""
+    global _data_dir
+    _data_dir = Path(path).expanduser() if path else None
+
+
+def config_dir() -> Path:
+    """Where settings.json lives. Never moves, see the note above."""
+    return default_state_dir()
+
+
 def state_dir() -> Path:
+    """Where the saved scan, selection, cache and log live right now."""
+    return _data_dir or default_state_dir()
+
+
+def default_state_dir() -> Path:
     """Where per-user state lives, per operating system."""
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")

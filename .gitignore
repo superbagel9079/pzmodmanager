@@ -12,7 +12,14 @@ pzmodmanager-modlist.txt
 pzmodmanager-server.ini.txt
 pzmodmanager-workshop-links.txt
 pzmodmanager.log
+
+# State files. These normally live in the per-user folder, but the Data folder
+# setting can point them here, and none of them belongs in the repository: the
+# scan and the selection describe your machine, and the cache is disposable.
 settings.json
+last-scan.json
+selection.json
+workshop-cache.json
 
 # Left over from the old name, before the tool became pzmodmanager
 pzmodcheck/
