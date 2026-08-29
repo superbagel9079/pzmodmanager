@@ -51,6 +51,7 @@ AUTHOR = "by superbagel9079"
 FIRST_RUN_ITEMS = [
     ("results", "Results"),
     ("manage", "Manage mods"),
+    ("browse", "Add mods"),
     ("scan", "Scan"),
     ("settings", "Settings"),
     ("quit", "Quit"),
@@ -58,6 +59,7 @@ FIRST_RUN_ITEMS = [
 RETURNING_ITEMS = [
     ("results", "Last results"),
     ("manage", "Manage mods"),
+    ("browse", "Add mods"),
     ("scan", "Rescan"),
     ("settings", "Settings"),
     ("quit", "Quit"),
@@ -77,6 +79,20 @@ MARKER = {
 
 # Shared look, applied to every screen.
 RETRO_CSS = """
+/* Textual paints scrollbars with the theme accent, which is blue and lands in
+   the middle of a deliberately monochrome interface. Setting scrollbar-color
+   alone is not enough: there are separate colours for hover, active, the
+   background and the corner, and any one left alone shows the accent through.
+   The universal selector catches widgets this file never names. */
+* {
+    scrollbar-background: #000000;
+    scrollbar-background-hover: #000000;
+    scrollbar-background-active: #000000;
+    scrollbar-color: #4a4a4a;
+    scrollbar-color-hover: #6a6a6a;
+    scrollbar-color-active: #8a8a8a;
+    scrollbar-corner-color: #000000;
+}
 Screen {
     background: #000000;
     color: #b4b4b4;
@@ -206,14 +222,21 @@ class MenuScreen(Screen):
         previous = menu.highlighted if keep_position else None
         menu.clear_options()
         scan = self.app.stored
-        items = RETURNING_ITEMS if scan else FIRST_RUN_ITEMS
+        # What is behind each entry, rather than whether a file happens to exist.
+        # A scan that found nothing is saved like any other, and judging by the
+        # file alone offered "Last results" onto an empty screen.
+        has_results = bool(scan and scan.has_results)
+        has_mods = bool(scan and scan.has_mods)
+        items = RETURNING_ITEMS if has_results else FIRST_RUN_ITEMS
         menu.add_options(
             [
                 Option(
                     label.center(_MENU_WIDTH),
                     id=key,
-                    # Both entries need a scan behind them to mean anything.
-                    disabled=(key in {"results", "manage"} and scan is None),
+                    disabled=(
+                        (key == "results" and not has_results)
+                        or (key == "manage" and not has_mods)
+                    ),
                 )
                 for key, label in items
             ]
@@ -221,14 +244,25 @@ class MenuScreen(Screen):
         if previous is not None:
             menu.highlighted = min(previous, len(items) - 1)
         else:
-            # A first run starts on Scan, a later run on the results already there.
-            menu.highlighted = 0 if scan else 2
+            # A first run starts on Scan, a later run on the results already
+            # there. Found by key: a hardcoded index breaks the moment an entry
+            # is added above it, and does so silently.
+            if has_results:
+                menu.highlighted = 0
+            else:
+                keys = [key for key, _label in items]
+                menu.highlighted = keys.index("scan") if "scan" in keys else 0
         self.query_one("#footer", Static).update(self._footer_text())
 
     def _footer_text(self) -> str:
         scan = self.app.stored
         if scan is None:
             return "mod compatibility checker for Project Zomboid"
+        if not scan.has_results:
+            return (
+                f"last scan {scan.saved_label} found no mods, so there is nothing "
+                "to open. Check the folders under Settings, then scan again."
+            )
         return (
             f"last scan {scan.saved_label}   "
             f"{scan.mod_count} mods   {len(scan.findings)} findings"
@@ -250,6 +284,19 @@ class MenuScreen(Screen):
                     export_dir=self.app.report_path.parent,
                     selection_path=self.app.selection_path,
                     steam_sdk=self.app.steam_sdk,
+                )
+            )
+        elif choice == "browse":
+            from .browse_screen import BrowseScreen
+
+            scan = self.app.stored
+            self.app.push_screen(
+                BrowseScreen(
+                    subscribed=set(scan.subscribed_ids)
+                    if scan and scan.subscribed_ids is not None else None,
+                    steam_cache=self.app.scan_options.steam_cache,
+                    installed_mods=scan.mods if scan else [],
+                    build=self.app.scan_options.build,
                 )
             )
         elif choice == "settings":
@@ -560,6 +607,12 @@ class ResultsScreen(Screen):
         report = getattr(self.app, "report_written", None) or self.scan.report_path
         if report and Path(report).is_file():
             webbrowser.open(Path(report).resolve().as_uri())
+            return
+        # Silently doing nothing is the worst of the three options here.
+        self.query_one("#footer", Static).update(
+            f"the report is not there any more: {report}" if report
+            else "no report was written for this scan"
+        )
 
     def action_manage(self) -> None:
         from .manager_screen import ManageScreen

@@ -179,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="report what the Steam bridge can do and change nothing",
     )
     steamsdk.add_argument(
+        "--add", action="append", default=[], metavar="ID_OR_URL",
+        help="subscribe to a Workshop item, by id or by its page address "
+             "(repeatable); Steam downloads it in the background afterwards",
+    )
+    steamsdk.add_argument(
         "--unsubscribe", action="append", default=[], metavar="ID",
         help="unsubscribe from a mod id or Workshop id (repeatable)",
     )
@@ -336,6 +341,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # --manage opens the interface. The other selection options are the headless
     # route, and only they should bypass it.
+    if args.add:
+        return run_add(args, settings)
+
     headless_manager = bool(
         args.enable
         or args.unsubscribe
@@ -476,6 +484,88 @@ def run_steam_check(args, settings: Settings | None = None) -> int:
         return 1
     console.print(f"  subscribed   {len(answer.subscribed)} item(s) visible")
     console.print("\n[green]The bridge works. Subscriptions can be changed.[/green]")
+    return 0
+
+
+def run_add(args, settings: Settings | None = None) -> int:
+    """Subscribe to Workshop items named on the command line."""
+    from rich.console import Console
+
+    from .steam import (
+        WorkshopCache,
+        fetch_items,
+        item_url,
+        mod_ids_in_description,
+        parse_workshop_ids,
+    )
+    from .steambridge import subscribe as bridge_subscribe
+    from .steamsdk import find_library
+
+    console = Console()
+    ids: list[str] = []
+    for entry in args.add:
+        found = parse_workshop_ids(entry)
+        if not found:
+            console.print(f"[red]Not a Workshop id or link: {entry}[/red]")
+            return 2
+        ids += [i for i in found if i not in ids]
+
+    console.print(f"[bold]Looking up {len(ids)} Workshop item(s)[/bold]\n")
+    items = fetch_items(ids, cache=WorkshopCache(store.default_steam_cache_path()))
+    for wid in ids:
+        item = items.get(wid)
+        if item is None:
+            console.print(f"  [yellow]{wid}  Steam returned nothing about this[/yellow]")
+            continue
+        console.print(f"  {item.title or '(no title)'}")
+        console.print(f"    {item_url(wid)}")
+        claimed = mod_ids_in_description(item.description)
+        if claimed:
+            console.print(f"    [dim]description claims mod id(s): {', '.join(claimed[:5])}[/dim]")
+        if item.missing:
+            console.print("    [yellow]no longer on the Workshop[/yellow]")
+
+    configured = Path(args.steam_sdk).expanduser() if args.steam_sdk else None
+    if configured is None and settings is not None:
+        configured = settings.steam_sdk_path
+    library = find_library(configured)
+    if library is None:
+        console.print(
+            "\n[red]No Steamworks library found, so nothing was subscribed.[/red]\n"
+            "Set the Steam SDK in the settings, or pass --steam-sdk."
+        )
+        return 2
+
+    console.print(f"\n[bold]Subscribing to {len(ids)} item(s)[/bold]")
+    if not args.yes and sys.stdin.isatty():
+        try:
+            answer = input("Type YES to go ahead, anything else to cancel: ")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\nCancelled.")
+            return 0
+        if answer.strip() != "YES":
+            console.print("Cancelled, nothing was changed.")
+            return 0
+    elif not args.yes:
+        console.print("[red]Not a terminal. Pass --yes if you really mean it.[/red]")
+        return 2
+
+    answer = bridge_subscribe(
+        library, [int(i) for i in ids],
+        progress=lambda line: console.print(f"  [dim]{line}[/dim]"),
+    )
+    if not answer.usable:
+        console.print(f"\n[red]{answer.error}[/red]")
+        return 2
+    console.print()
+    for item in answer.done:
+        console.print(f"[green]added[/green]     {item}")
+    for item in answer.failed:
+        console.print(f"[yellow]not added[/yellow] {item}")
+    console.print(
+        "\nSteam downloads these in the background. Nothing is on disk yet, so "
+        "run a scan once it has finished."
+    )
     return 0
 
 

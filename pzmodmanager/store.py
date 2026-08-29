@@ -105,6 +105,25 @@ class StoredScan:
     report_path: str = ""
     saved_at: float = 0.0
     steam_matched: int = 0
+    # None means Steam was never asked, which is not the same as being
+    # subscribed to nothing. The Add mods screen needs the difference to say
+    # whether an item is already yours or genuinely new.
+    subscribed_ids: list[str] | None = None
+
+    @property
+    def has_results(self) -> bool:
+        """Whether opening this would show anything at all.
+
+        A scan that found no mods still saves a record of itself, so the file
+        existing is not the same as there being something to look at. Judging by
+        the file left the menu offering "Last results" onto an empty screen.
+        """
+        return bool(self.mods) or bool(self.findings)
+
+    @property
+    def has_mods(self) -> bool:
+        """Whether the manager would have anything to list."""
+        return bool(self.mods)
 
     @property
     def saved_label(self) -> str:
@@ -127,6 +146,11 @@ def from_result(result, report_path: Path | None = None) -> StoredScan:
         report_path=str(report_path) if report_path else "",
         saved_at=time.time(),
         steam_matched=getattr(result, "steam_matched", 0),
+        subscribed_ids=(
+            list(result.subscribed_ids)
+            if getattr(result, "subscribed_ids", None) is not None
+            else None
+        ),
     )
 
 
@@ -143,6 +167,7 @@ def save(scan: StoredScan, path: Path | None = None) -> Path | None:
         "scanned": scan.scanned,
         "report_path": scan.report_path,
         "steam_matched": scan.steam_matched,
+        "subscribed_ids": scan.subscribed_ids,
         "mods": [ref.to_json() for ref in scan.mods],
         "findings": [
             {
@@ -211,6 +236,14 @@ def load(path: Path | None = None) -> StoredScan | None:
         report_path=payload.get("report_path", ""),
         saved_at=float(payload.get("saved_at", 0.0)),
         steam_matched=int(payload.get("steam_matched", 0)),
+        # Kept as None when absent. A scan saved before Steam was configured
+        # said nothing about subscriptions, and that must not read as "you are
+        # subscribed to nothing".
+        subscribed_ids=(
+            [str(i) for i in payload["subscribed_ids"]]
+            if payload.get("subscribed_ids") is not None
+            else None
+        ),
     )
     log.info("Loaded a stored scan from %s (%d findings)", source, len(findings))
     return scan

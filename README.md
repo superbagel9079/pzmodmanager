@@ -35,8 +35,9 @@ Client-side tool. Targets Build 42 by default; the Build 41 layout is handled to
 - [Part I. Choosing what you run](#part-i-choosing-what-you-run)
 - [Part II. Actually disabling a mod](#part-ii-actually-disabling-a-mod)
 - [Part III. Taking the load order into account](#part-iii-taking-the-load-order-into-account)
-- [Part IV. Mod images](#part-iv-mod-images)
-- [Part V. Workshop links](#part-v-workshop-links)
+- [Part IV. Adding mods from the Workshop](#part-iv-adding-mods-from-the-workshop)
+- [Part V. Mod images](#part-v-mod-images)
+- [Part VI. Workshop links](#part-vi-workshop-links)
 
 **[Chapter IV. Steam](#chapter-iv-steam)**
 
@@ -236,6 +237,7 @@ Arrow keys to move, ENTER to select.
   +------------------+            +------------------+
   |     Results      | greyed     |   Last results   | <- inverse video
   |   Manage mods    | greyed     |   Manage mods    |
+  |     Add mods     |            |     Add mods     |
   |      Scan        | <- video   |      Rescan      |
   |     Settings     |   inverse  |     Settings     |
   |      Quit        |            |      Quit        |
@@ -249,6 +251,13 @@ On a first run the menu offers a greyed out **Results** and a plain **Scan**,
 because there is nothing to show yet. Once a scan has run, the result is saved,
 and every later launch offers **Last results** and **Rescan** instead, with the
 date and size of the last scan in the footer.
+
+**An entry is greyed when there is nothing behind it, not when a file is
+missing.** A scan that found no mods is saved exactly like one that found a
+hundred, so judging by the file alone offered **Last results** onto an empty
+screen. **Results** needs a scan that saw something; **Manage mods** needs mods
+to list. When a scan came back empty the footer says so and points at the folder
+settings, rather than leaving you to open an empty screen and wonder.
 
 - **Scan** / **Rescan** runs the scan and shows every step live, then opens the
   results.
@@ -312,7 +321,7 @@ what would break if you dropped it, and its Workshop link:
 
 | Key | Effect |
 |---|---|
-| SPACE | select or deselect the highlighted mod |
+| `x` or SPACE | select or deselect the highlighted mod |
 | / | search by name or id |
 | a / n | select everything, or nothing |
 | o | reset to what the scanned load order had enabled |
@@ -440,7 +449,111 @@ To pick another:
 python -m pzmodmanager --order saved_modlists.txt --list-name "My solo run"
 ```
 
-### Part IV. Mod images
+### Part IV. Adding mods from the Workshop
+
+**Add mods** on the main menu, the opposite direction from the manager: the
+manager only ever works with what is already on your disk, this finds what is
+not.
+
+#### A. Looking something up
+
+Paste a Workshop link or an id into the box and press ENTER. Several at once is
+fine, separated by spaces, commas or newlines, and a full page address works as
+well as a bare number.
+
+```
+https://steamcommunity.com/sharedfiles/filedetails/?id=2392709985
+2392709985 3728775267
+```
+
+Each result shows the title, the size, the last update, and its status against
+your machine: **already installed**, **subscribed but not on disk yet**, **new**,
+or **gone from the Workshop**. That last one matters, since subscribing to a
+removed item downloads nothing.
+
+The panel also shows the mod ids the description claims to install. Project
+Zomboid authors write those by hand, by convention, because the Workshop has no
+machine readable field for them. It is the only way to know what an item will
+install before downloading it, and the screen says plainly that it is a hint
+rather than a fact.
+
+`x` or SPACE marks an item, `a` subscribes to everything marked, after one grouped
+confirmation showing the full list and the total download size. The newest lookup
+goes to the top of the list, and the cursor lands on it.
+
+#### B. What can be known before downloading
+
+A `!` on a row means read the panel first. It comes from two sources with very
+different standing, and the panel keeps them apart rather than blurring them into
+one list of "problems".
+
+**The build tag is reliable.** Authors pick it from a fixed Steam list, so an
+item tagged Build 41 while you target Build 42 is a stated fact, not a guess.
+Build 42 changed the mod folder layout and much of the Lua API, so that one is
+shown as a conflict. An item with no build tag at all is a warning: there is
+simply no telling. Targeting Build 41 flips the test rather than hardcoding 42.
+
+**Everything read from the description is a hint.** There is no machine readable
+field for a mod id or a dependency, so authors type them into the description by
+convention, in a dozen shapes. What the tool reads out of that is shown as
+something to check on the page, never as a finding.
+
+Checked against what you already have, from the last scan:
+
+| What it spots | How sure |
+|---|---|
+| The item claims a mod id you already have installed | conflict, and it names the other Workshop item |
+| A mod you have declares one of these ids incompatible | conflict, read from mod.info |
+| The item is gone from the Workshop | conflict, subscribing brings nothing down |
+| Its description names a dependency you do not have | warning, read from prose |
+| It provides a dependency one of your mods is missing | good news, not a problem |
+
+That last one is worth having: the scan tells you `WindSway` requires
+`ZombieBuddy` and it is not installed, and this screen tells you when the item
+you are looking at is the one that fills the gap.
+
+The real dependency and conflict graph is only knowable once `mod.info` is on
+disk, which is after the download. This is the part that can be known before, and
+a Build 41 mod or a duplicate id is exactly what you want caught beforehand.
+
+#### C. Searching by name, and why it goes through Steam
+
+Type a name instead of an id and press ENTER. The box decides which of the two
+you meant: text with an id in it is looked up, text without one is searched for.
+Steam's own Workshop search opens in your browser with that text. Copy the address of anything you like, paste it
+back, and you get the full card.
+
+That is one step more than searching inside the tool, and it is deliberate.
+Looking an item up by id uses `GetPublishedFileDetails`, which is public and
+needs nothing. Searching the whole Workshop by name is a different endpoint,
+`IPublishedFileService/QueryFiles`, and it wants a Steam Web API key. The key is
+free and anyone can create one, but it is a step this tool does not currently ask
+anybody to take, and it could not be tested where this was written. Handing the
+search to Steam costs nothing, uses the real thing rather than an approximation,
+and works today.
+
+#### D. What subscribing actually does
+
+It tells Steam you want the item. Steam then downloads it in the background, in
+its own time. **Nothing is on disk at the moment you confirm**, and a scan run
+straight afterwards will not find the new mods. The tool says so rather than
+pretending otherwise, and waits for you to press `r` when you judge the download
+finished, which rescans and reopens the manager.
+
+Subscribing is undone by unsubscribing. Nothing here is permanent, which is why
+this screen carries a lighter warning than the unsubscribe one.
+
+From the command line:
+
+```bash
+python -m pzmodmanager --add 2392709985
+python -m pzmodmanager --add "https://steamcommunity.com/sharedfiles/filedetails/?id=2392709985"
+```
+
+Both look the item up, print what Steam knows about it, then ask you to type
+`YES`. Nothing happens without that, or without `--yes` for a script.
+
+### Part V. Mod images
 
 The report shows each mod's picture in the inventory. By default it links the
 Workshop preview, which keeps the file small and needs the Steam lookup to have
@@ -463,7 +576,7 @@ previews, and the manager says so instead of showing a picture.
 pip install Pillow
 ```
 
-### Part V. Workshop links
+### Part VI. Workshop links
 
 Every mod that came from the Workshop is linked to its page, in three places:
 
@@ -717,7 +830,19 @@ immediately but changes nothing you are looking at: go back to the menu and run
 value, because this is the sort of thing that is obvious once and confusing
 every other time.
 
-#### B. Command line arguments still win
+#### B. Starting over
+
+Four actions at the bottom of the same screen clear what the tool remembers about
+itself: the last scan, the saved selection, the Workshop cache and its preview
+images, or all of that plus every setting back to its default.
+
+ENTER arms one, ENTER again carries it out, and moving to another row disarms it.
+Nothing outside the tool is touched by any of them: no mod, no save, no server
+file. Clearing the last scan puts the menu back to offering **Scan** rather than
+**Last results**, which is also the quickest way to see the first-run interface
+again.
+
+#### C. Command line arguments still win
 
 A saved setting is a default, not a lock.
 Passing `--build 42.19` runs with that and leaves the saved value alone. The tool
@@ -819,6 +944,7 @@ the progress display.
 | `--selection FILE` | where the selection is stored |
 | `--steam-check` | report what the Steam bridge can do, change nothing |
 | `--steam-sdk PATH` | the Steamworks redistributable, or its folder |
+| `--add ID_OR_URL` | subscribe to a Workshop item, after confirmation |
 | `--unsubscribe ID` | unsubscribe from a mod, after confirmation |
 | `--unsubscribe-unselected` | unsubscribe from everything not in the selection |
 | `--yes` | skip the typed confirmation |
@@ -883,7 +1009,7 @@ pzmodmanager/
   logs.py        log file setup
   settings.py    what the tool remembers between runs
   selection.py   dependency closure, validation, load order, ini export
-  steam.py       Steam Workshop lookups and their cache
+  steam.py       Workshop lookups, their cache, and reading pasted ids
   store.py       saves the last scan so a later launch can reopen it
   fonts.py       embeds a display font in the report
   posters.py     finds mod artwork and draws it as terminal half blocks
@@ -894,6 +1020,7 @@ pzmodmanager/
   tui.py         the interactive interface
   manager_screen.py     the mod manager screen
   settings_screen.py    the editable settings screen
+  browse_screen.py      finding Workshop items and subscribing to them
   unsubscribe_screen.py the confirm and run screens for unsubscribing
   cli.py         command line
 tests/

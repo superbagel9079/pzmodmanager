@@ -47,7 +47,24 @@ ROWS = [
      "Ignore mods absent from the load order."),
     ("report_path", "Report file", "path",
      "Where the HTML report is written."),
+
+    # Actions rather than values. ENTER arms one, ENTER again carries it out, so
+    # a stray keypress on a list you are scrolling through cannot wipe anything.
+    ("reset_scan", "Clear the last scan", "action",
+     "Forgets the saved results. The menu goes back to offering Scan rather than "
+     "Last results. Your mods are untouched."),
+    ("reset_selection", "Clear the saved selection", "action",
+     "Forgets which mods you ticked in the manager. It starts again from what the "
+     "load order had enabled."),
+    ("reset_cache", "Clear the Workshop cache", "action",
+     "Throws away the cached Workshop answers and preview images. The next scan "
+     "asks Steam again, which is slower once."),
+    ("reset_all", "Reset everything above", "action",
+     "Every setting back to its default, and all of the above cleared. Nothing "
+     "outside this tool is touched: no mod, no save, no server file."),
 ]
+
+RESET_ACTIONS = {"reset_scan", "reset_selection", "reset_cache", "reset_all"}
 
 # Settings that only take effect the next time mods are read from disk. Saying so
 # at the moment of the change beats leaving you to wonder why nothing moved.
@@ -141,6 +158,9 @@ class SettingsScreen(Screen):
         self.settings_path = settings_path
         self.editing: str | None = None
         self.notice = ""
+        # Which action is one keypress from happening. Cleared by any movement.
+        self.armed: str | None = None
+        self.value_column = None
 
     # ------------------------------------------------------------------ view --
 
@@ -163,7 +183,8 @@ class SettingsScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#rows", DataTable)
         table.add_column("SETTING", width=26)
-        table.add_column("VALUE")
+        # Kept, so one cell can be rewritten without redrawing the whole table.
+        self.value_column = table.add_column("VALUE")
         self.query_one("#value", Input).display = False
         self.refresh_rows()
         self.refresh_detected()
@@ -173,8 +194,14 @@ class SettingsScreen(Screen):
         table = self.query_one("#rows", DataTable)
         position = table.cursor_row
         table.clear()
-        for name, label, _kind, _help in ROWS:
-            table.add_row(label, self.settings.describe(name), key=name)
+        for name, label, kind, _help in ROWS:
+            if kind == "action":
+                value = (
+                    "ENTER again to confirm" if self.armed == name else "ENTER to do it"
+                )
+            else:
+                value = self.settings.describe(name)
+            table.add_row(label, value, key=name)
         if ROWS:
             table.move_cursor(row=min(position, len(ROWS) - 1))
         self.query_one("#footer", Static).update(
@@ -226,6 +253,22 @@ class SettingsScreen(Screen):
     # --------------------------------------------------------------- editing --
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Moving to another row disarms a pending action.
+
+        The comparison matters. Redrawing the table moves the cursor back onto
+        the same row, which fires this event again, so disarming on any highlight
+        at all disarmed the action the instant it was armed: the first ENTER
+        appeared to do nothing and the second armed it, one press out of step for
+        ever.
+        """
+        if self.armed is None:
+            self.show_help()
+            return
+        key = getattr(event.row_key, "value", None)
+        if key is not None and key != self.armed:
+            self.armed = None
+            self.notice = ""
+            self.call_after_refresh(self.refresh_rows)
         self.show_help()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -238,6 +281,9 @@ class SettingsScreen(Screen):
         if row is None:
             return
         name, label, kind, _help = row
+        if kind == "action":
+            self.run_action(name, label)
+            return
         if kind == "bool":
             setattr(self.settings, name, not getattr(self.settings, name))
             self.save("toggled " + label.lower() + _note(name))
@@ -264,11 +310,92 @@ class SettingsScreen(Screen):
         self.stop_editing()
         self.save(f"saved {name}" + _note(name))
 
+    def run_action(self, name: str, label: str) -> None:
+        """Two presses: the first arms, the second acts.
+
+        Arming rewrites one cell rather than redrawing the table, and that is not
+        a micro-optimisation. Redrawing clears the rows, which snaps the cursor to
+        the first one, which fires a highlight for a different row, which disarmed
+        the action a moment after it was armed. The first ENTER then looked like
+        it had done nothing and every press was one out of step.
+        """
+        if self.armed != name:
+            self.armed = name
+            self.notice = f"{label.lower()}: press ENTER again to confirm"
+            table = self.query_one("#rows", DataTable)
+            if self.value_column is not None:
+                try:
+                    table.update_cell(name, self.value_column, "ENTER again to confirm")
+                except Exception:
+                    pass
+            self.query_one("#footer", Static).update(self.notice)
+            return
+        self.armed = None
+        self.notice = self.perform_reset(name)
+        self.refresh_rows()
+        self.refresh_detected()
+
+    def perform_reset(self, name: str) -> str:
+        """Delete this tool's own state. Nothing of the game's is touched."""
+        from . import store
+        from .posters import preview_cache_dir
+
+        def remove(path: Path) -> bool:
+            try:
+                if path.is_file():
+                    path.unlink()
+                    return True
+            except OSError as exc:
+                log_note.append(str(exc))
+            return False
+
+        log_note: list[str] = []
+        done: list[str] = []
+
+        if name in ("reset_scan", "reset_all"):
+            if remove(store.default_store_path()):
+                done.append("last scan")
+            # The menu reads this, so it has to be told, not just the file.
+            self.app.stored = None
+        if name in ("reset_selection", "reset_all"):
+            if remove(store.default_selection_path()):
+                done.append("selection")
+        if name in ("reset_cache", "reset_all"):
+            if remove(store.default_steam_cache_path()):
+                done.append("Workshop cache")
+            folder = preview_cache_dir()
+            removed = 0
+            try:
+                for entry in folder.glob("*.img"):
+                    try:
+                        entry.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            if removed:
+                done.append(f"{removed} preview image(s)")
+        if name == "reset_all":
+            self.settings = Settings()
+            self.settings.save(self.settings_path)
+            self.app.settings = self.settings
+            done.append("every setting")
+
+        if log_note:
+            return f"partly done: {log_note[0]}"
+        if not done:
+            return "nothing to clear, it was already empty"
+        return "cleared: " + ", ".join(done)
+
     def action_clear_value(self) -> None:
         row = self.current_row()
         if row is None:
             return
         name, label, kind, _help = row
+        if kind == "action":
+            self.run_action(name, label)
+            return
         if kind == "bool":
             return
         setattr(self.settings, name, [] if kind == "paths" else "")

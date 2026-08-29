@@ -270,3 +270,123 @@ def stated_incompatibilities(description: str, known_titles: dict[str, str]) -> 
                 if title in window and mod_id not in hits:
                     hits.append(mod_id)
     return hits
+
+
+# --------------------------------------------------------------------------- #
+# Reading what the user pastes, and what a Workshop page says about itself
+# --------------------------------------------------------------------------- #
+
+WORKSHOP_ITEM_URL = "https://steamcommunity.com/sharedfiles/filedetails/?id={id}"
+WORKSHOP_SEARCH_URL = (
+    "https://steamcommunity.com/workshop/browse/?appid=108600"
+    "&searchtext={text}&browsesort=textsearch&section=readytouseitems"
+)
+
+# Ids are long numbers. The bound is deliberately loose: early Workshop items
+# have short ids and nothing promises they stay ten digits.
+_ID_IN_URL = re.compile(r"[?&]id=(\d+)")
+_ONLY_DIGITS = re.compile(r"^\d{4,20}$")
+
+# Project Zomboid authors write the mod id into the description by convention,
+# because there is no machine readable field for it. It is worth reading: it is
+# the only way to know what a Workshop item will install before downloading it.
+_MOD_ID_LINE = re.compile(
+    r"^[ \t\*\-]*mod\s*id\s*s?\s*[:=]\s*(.+)$", re.IGNORECASE | re.MULTILINE
+)
+_SPLIT_IDS = re.compile(r"[,;/]| and ")
+
+
+def parse_workshop_ids(text: str) -> list[str]:
+    """Pull Workshop ids out of whatever was pasted, in the order given.
+
+    Accepts a bare id, a full item URL, or several of either separated by
+    spaces, commas or newlines. Anything unrecognisable is ignored rather than
+    guessed at, so a typo produces nothing instead of the wrong mod.
+    """
+    found: list[str] = []
+    for token in re.split(r"[\s,]+", (text or "").strip()):
+        if not token:
+            continue
+        match = _ID_IN_URL.search(token)
+        candidate = match.group(1) if match else token
+        if _ONLY_DIGITS.match(candidate) and candidate not in found:
+            found.append(candidate)
+    return found
+
+
+def mod_ids_in_description(description: str) -> list[str]:
+    """The mod ids an item's description claims to install.
+
+    A convention, not a guarantee: authors type this by hand and some do not
+    type it at all. Treat it as a hint to show the user, never as fact the tool
+    relies on. The real ids are read from mod.info once the files are on disk.
+    """
+    found: list[str] = []
+    for line in _MOD_ID_LINE.findall(description or ""):
+        for piece in _SPLIT_IDS.split(line):
+            name = piece.strip().strip("`\"'[]()")
+            # Trailing prose after the id is common: "MyMod (for build 42)".
+            name = name.split()[0] if name.split() else ""
+            if name and len(name) < 80 and name.lower() != "n/a" and name not in found:
+                found.append(name)
+    return found
+
+
+def item_url(workshop_id: str) -> str:
+    return WORKSHOP_ITEM_URL.format(id=workshop_id)
+
+
+def search_url(text: str) -> str:
+    """Steam's own Workshop search, for the text the user typed.
+
+    Searching the Workshop from inside the tool needs a Web API key, which not
+    everyone has and which this tool does not ask for. Handing the search to
+    Steam costs nothing and uses the real thing, and the ids come back by paste.
+    """
+    return WORKSHOP_SEARCH_URL.format(text=urllib.parse.quote_plus(text or ""))
+
+
+# Steam tags carry the game build a Workshop item was made for: "Build 41",
+# "Build 42". Structured data rather than prose, so this one can be trusted.
+_BUILD_TAG = re.compile(r"^build\s*(\d+)", re.IGNORECASE)
+
+# Dependencies, by contrast, are prose. Authors write them in a dozen shapes and
+# nothing enforces any of them, so what comes out is a hint to show you, never a
+# fact the tool acts on.
+_REQUIRES_LINE = re.compile(
+    r"^[ \t\*\-]*(?:require[sd]?|dependenc(?:y|ies)|depends?\s+on)"
+    r"\s*(?:mods?|items?)?\s*[:=]\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def build_tags(tags) -> list[str]:
+    """The game builds an item declares, as major version strings.
+
+    Read from the Steam tags, which authors pick from a fixed list, so this is
+    reliable in a way the description never is. An empty result means the item
+    declares no build at all, which is not the same as declaring yours.
+    """
+    found: list[str] = []
+    for tag in tags or []:
+        match = _BUILD_TAG.match(str(tag).strip())
+        if match and match.group(1) not in found:
+            found.append(match.group(1))
+    return found
+
+
+def requires_in_description(description: str) -> list[str]:
+    """Mods the description says are needed. Prose, so a hint and nothing more."""
+    found: list[str] = []
+    for line in _REQUIRES_LINE.findall(description or ""):
+        # Stop at a sentence end: "Requires Brita's Weapon Pack. Works with..."
+        line = re.split(r"[.!?]\s", line)[0]
+        for piece in _SPLIT_IDS.split(line):
+            name = piece.strip().strip("`\"'[]()*").strip()
+            if not name or len(name) > 60:
+                continue
+            if name.lower() in {"none", "n/a", "nothing", "no"}:
+                continue
+            if name not in found:
+                found.append(name)
+    return found

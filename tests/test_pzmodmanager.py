@@ -345,6 +345,471 @@ def test_steam_bridge(tmp: Path) -> None:
           "steam: several UGC accessor versions are probed, not one guessed")
 
 
+def test_workshop_input() -> None:
+    """Reading what a user pastes, and what an author wrote in a description."""
+    from pzmodmanager.steam import (
+        item_url,
+        mod_ids_in_description,
+        parse_workshop_ids,
+        search_url,
+    )
+
+    check(parse_workshop_ids("2392709985") == ["2392709985"],
+          "paste: a bare id")
+    check(parse_workshop_ids(
+        "https://steamcommunity.com/sharedfiles/filedetails/?id=2392709985"
+    ) == ["2392709985"], "paste: a full item link")
+    check(parse_workshop_ids(
+        "https://steamcommunity.com/sharedfiles/filedetails/?id=2392709985&searchtext=x"
+    ) == ["2392709985"], "paste: a link with extra query parameters")
+    check(parse_workshop_ids("2392709985, 3728775267\n111222333")
+          == ["2392709985", "3728775267", "111222333"],
+          "paste: several at once, in the order given")
+    check(parse_workshop_ids("2392709985 2392709985") == ["2392709985"],
+          "paste: the same id twice is one entry")
+    check(parse_workshop_ids("inventory tetris") == [],
+          "paste: a name yields nothing rather than a guessed id")
+    check(parse_workshop_ids("") == [], "paste: empty input is not an error")
+    # A workshop URL contains 108600 in some forms; it must not become an id.
+    check("108600" not in parse_workshop_ids(
+        "https://steamcommunity.com/workshop/browse/?appid=108600&searchtext=car"),
+        "paste: an app id in a search link is not mistaken for an item")
+
+    described = (
+        "Adds cars.\n"
+        "Workshop ID: 2392709985\n"
+        "Mod ID: KI5Vehicles\n"
+        "Mod IDs: PackA, PackB and PackC\n"
+        "mod id = Legacy (build 41 only)\n"
+    )
+    found = mod_ids_in_description(described)
+    check("KI5Vehicles" in found, "description: the mod id is read")
+    check("PackB" in found, "description: a comma separated list is split")
+    check("PackC" in found, "description: 'and' is treated as a separator too")
+    check("Legacy" in found and "(build" not in found,
+          "description: trailing prose after an id is dropped")
+    check(mod_ids_in_description("") == [],
+          "description: nothing claimed is not an error")
+    check(mod_ids_in_description("no ids here at all") == [],
+          "description: prose with no declaration yields nothing")
+
+    check("id=123" in item_url("123"), "links: an item page is built from the id")
+    check("searchtext=inventory+tetris" in search_url("inventory tetris"),
+          "links: a Workshop search is built from the typed text")
+
+
+def test_browse_screen() -> None:
+    """What the Add mods screen says about an item it has looked up."""
+    from pzmodmanager.browse_screen import BrowseScreen, _size, _updated
+    from pzmodmanager.steam import WorkshopItem
+
+    here = WorkshopItem(workshop_id="111", title="Already Here")
+    coming = WorkshopItem(workshop_id="222", title="Subscribed")
+    fresh = WorkshopItem(workshop_id="333", title="Brand New")
+    gone = WorkshopItem(workshop_id="444", title="Removed", missing=True)
+
+    screen = BrowseScreen(installed={"111"}, subscribed={"111", "222"})
+    check(screen.status_of(here) == "already installed",
+          "browse: an installed item says so")
+    check("not on disk yet" in screen.status_of(coming),
+          "browse: subscribed but undownloaded is its own state")
+    check(screen.status_of(fresh) == "new", "browse: an unknown item is new")
+    check("gone" in screen.status_of(gone),
+          "browse: an item removed from the Workshop is flagged")
+
+    # The difference that matters: never asking Steam is not the same as being
+    # subscribed to nothing, and the screen must not claim the latter.
+    unknown = BrowseScreen(installed={"111"}, subscribed=None)
+    check(unknown.status_of(coming) == "new",
+          "browse: with no subscription list, nothing is claimed about one")
+
+    check(_size(None) == "unknown size", "browse: an unknown size says unknown")
+    check(_size(1_200_000).endswith("MB"), "browse: sizes are human readable")
+    check(_updated(None) == "unknown", "browse: an unknown date says unknown")
+
+    from pzmodmanager import tui
+
+    for name, items in (("first run", tui.FIRST_RUN_ITEMS),
+                        ("returning", tui.RETURNING_ITEMS)):
+        keys = [key for key, _label in items]
+        check("browse" in keys, f"menu: the {name} menu offers Add mods")
+        check(keys.index("browse") < keys.index("scan"),
+              f"menu: Add mods sits above Scan in the {name} menu")
+
+
+def test_menu_greying() -> None:
+    """An entry is offered only when there is something behind it.
+
+    The trap: a scan that found no mods is saved exactly like one that found a
+    hundred, so a file existing is not the same as there being anything to open.
+    Judging by the file left the menu offering "Last results" and "Manage mods"
+    onto empty screens.
+    """
+    import asyncio
+
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    check(store.StoredScan().has_results is False,
+          "menu: an empty scan reports nothing to show")
+    check(store.StoredScan(mods=[sel.ModRef(mod_id="A")]).has_results is True,
+          "menu: a scan with mods reports something to show")
+    check(store.StoredScan(mod_count=9).has_mods is False,
+          "menu: a count with no mod records is still nothing to manage")
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 44)) as pilot:
+            await pilot.pause()
+
+            def state() -> dict:
+                menu = app.screen.query_one("#menu")
+                return {o.id: bool(o.disabled) for o in menu._options}
+
+            for label, stored in (
+                ("none", None),
+                ("empty", store.StoredScan(mod_count=0, mods=[], findings=[])),
+                ("full", store.StoredScan(mod_count=1, mods=[sel.ModRef(mod_id="A")])),
+            ):
+                app.stored = stored
+                app.screen.refresh_menu()
+                await pilot.pause()
+                seen[label] = state()
+                seen[label + "_footer"] = app.screen._footer_text()
+        return seen
+
+    seen = asyncio.run(run())
+
+    check(seen["none"]["results"] and seen["none"]["manage"],
+          "menu: with no scan, Results and Manage mods are greyed")
+    check(not seen["none"]["browse"] and not seen["none"]["scan"],
+          "menu: Add mods and Scan stay available with no scan")
+    check(seen["empty"]["results"] and seen["empty"]["manage"],
+          "menu: a scan that found nothing greys them too")
+    check("nothing to open" in seen["empty_footer"],
+          "menu: and the footer says why, instead of leaving you guessing")
+    check(not seen["full"]["results"] and not seen["full"]["manage"],
+          "menu: a scan with mods opens both")
+
+
+def test_reset_actions(tmp: Path) -> None:
+    """Clearing the tool's own state, twice on purpose.
+
+    The regression here is subtle and was found by driving the real screen. The
+    first ENTER armed the action and redrew the table; redrawing clears the rows,
+    which snaps the cursor to the first one, which fires a highlight for a
+    different row, which disarmed what had just been armed. Every press ended up
+    one out of step. Arming now rewrites a single cell instead.
+    """
+    import asyncio
+    import shutil
+
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.settings_screen import ROWS, SettingsScreen
+    from pzmodmanager.tui import ModCheckApp
+
+    data = tmp / "resetstate"
+    shutil.rmtree(data, ignore_errors=True)
+    data.mkdir(parents=True)
+    names = [name for name, _l, _k, _h in ROWS]
+    check("reset_scan" in names and "reset_all" in names,
+          "reset: the settings screen offers the reset actions")
+
+    previous = store._data_dir
+    store.set_data_dir(data)
+    try:
+        store.save(store.StoredScan(mod_count=7), store.default_store_path())
+        store.save_selection(["A"], store.default_selection_path())
+        store.default_steam_cache_path().write_text("{}", encoding="utf-8")
+        (data / "previews").mkdir(exist_ok=True)
+        (data / "previews" / "a.img").write_bytes(b"x")
+
+        async def run() -> dict:
+            seen: dict = {}
+            live = Settings(build="42.15", data_dir=str(data))
+            app = ModCheckApp(ScanOptions(), settings=live, cli_overrides=set())
+            app.stored = store.load(store.default_store_path())
+            async with app.run_test(size=(110, 44)) as pilot:
+                screen = SettingsScreen(live, data / "settings.json")
+                await app.push_screen(screen)
+                await pilot.pause()
+                table = screen.query_one("#rows")
+
+                table.move_cursor(row=names.index("reset_scan"))
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                seen["armed"] = screen.armed
+                seen["file_after_one"] = store.default_store_path().is_file()
+
+                await pilot.press("enter")
+                await pilot.pause()
+                seen["file_after_two"] = store.default_store_path().is_file()
+                seen["app_forgot"] = app.stored is None
+
+                # Arming then walking away must leave the action undone.
+                table.move_cursor(row=names.index("reset_selection"))
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                seen["armed_second"] = screen.armed
+                table.move_cursor(row=names.index("reset_cache"))
+                await pilot.pause()
+                seen["disarmed"] = screen.armed
+                seen["selection_kept"] = store.default_selection_path().is_file()
+
+                table.move_cursor(row=names.index("reset_all"))
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.press("enter")
+                await pilot.pause()
+                seen["build_after_all"] = screen.settings.build
+                seen["previews_left"] = len(list((data / "previews").glob("*.img")))
+            return seen
+
+        seen = asyncio.run(run())
+    finally:
+        store.set_data_dir(previous)
+
+    check(seen.get("armed") == "reset_scan",
+          "reset: one ENTER arms the action and it stays armed")
+    check(seen.get("file_after_one") is True,
+          "reset: and one ENTER alone deletes nothing")
+    check(seen.get("file_after_two") is False,
+          "reset: the second ENTER does it")
+    check(seen.get("app_forgot") is True,
+          "reset: the menu is told too, so it stops offering Last results")
+    check(seen.get("armed_second") == "reset_selection",
+          "reset: a second action arms the same way")
+    check(seen.get("disarmed") is None,
+          "reset: moving to another row disarms it")
+    check(seen.get("selection_kept") is True,
+          "reset: and the action it was armed for did not happen")
+    check(seen.get("build_after_all") == "42",
+          "reset: 'everything' puts the settings back to their defaults")
+    check(seen.get("previews_left") == 0,
+          "reset: and clears the cached preview images")
+
+
+def test_browse_concerns() -> None:
+    """What can honestly be said about an item before a single byte is downloaded.
+
+    Two sources with very different standing. The Steam build tag is picked from
+    a fixed list and is trustworthy. Everything read out of the description is
+    prose an author typed, and is treated as a hint, never as a finding.
+    """
+    from pzmodmanager.browse_screen import BrowseScreen
+    from pzmodmanager.steam import WorkshopItem, build_tags, requires_in_description
+
+    check(build_tags(["Build 42", "Clothing/Armor"]) == ["42"],
+          "tags: the build is read from the Steam tags")
+    check(build_tags(["Build 41", "Build 42"]) == ["41", "42"],
+          "tags: a mod supporting both is recognised as both")
+    check(build_tags(["Items"]) == [],
+          "tags: no build tag yields nothing, not a guess")
+    check(requires_in_description("Required mods: A, B and C") == ["A", "B", "C"],
+          "prose: a requires line is split into names")
+    check(requires_in_description("This mod requires nothing. Enjoy!") == [],
+          "prose: 'requires nothing' is not read as a dependency")
+
+    installed = [
+        sel.ModRef(mod_id="Brita_Armor", workshop_id="111"),
+        sel.ModRef(mod_id="NeedsFramework", workshop_id="222",
+                   requires=["MagicFramework"]),
+        sel.ModRef(mod_id="PickyMod", workshop_id="333", incompatible=["RivalMod"]),
+    ]
+    screen = BrowseScreen(installed_mods=installed, build="42")
+
+    def kinds(item):
+        return [k for k, _t in screen.concerns(item)]
+
+    def texts(item):
+        return " ".join(t for _k, t in screen.concerns(item))
+
+    clean = WorkshopItem(workshop_id="901", title="Nice", tags=["Build 42"],
+                         description="Mod ID: NiceMod")
+    check(screen.worst(clean) == "",
+          "concerns: a plain Build 42 mod raises nothing")
+
+    old = WorkshopItem(workshop_id="900", title="Old", tags=["Build 41"])
+    check(screen.worst(old) == "conflict", "concerns: a Build 41 only mod is a conflict")
+    check("Build 41" in texts(old), "concerns: and the message names the build")
+
+    untagged = WorkshopItem(workshop_id="902", title="Mystery", tags=["Items"])
+    check(screen.worst(untagged) == "warning",
+          "concerns: no build tag is a warning, not a conflict")
+
+    duplicate = WorkshopItem(workshop_id="903", title="Reupload", tags=["Build 42"],
+                             description="Mod ID: Brita_Armor")
+    check(screen.worst(duplicate) == "conflict",
+          "concerns: an item claiming an installed mod id is a conflict")
+    check("111" in texts(duplicate),
+          "concerns: and it names the Workshop item that already has that id")
+
+    fills = WorkshopItem(workshop_id="904", title="Framework", tags=["Build 42"],
+                         description="Mod ID: MagicFramework")
+    check("note" in kinds(fills) and screen.worst(fills) == "",
+          "concerns: filling a missing dependency is good news, not a problem")
+    check("NeedsFramework" in texts(fills),
+          "concerns: and it says which of your mods was waiting for it")
+
+    refused = WorkshopItem(workshop_id="905", title="Rival", tags=["Build 42"],
+                           description="Mod ID: RivalMod")
+    check(screen.worst(refused) == "conflict",
+          "concerns: an installed mod declaring this incompatible is a conflict")
+
+    needy = WorkshopItem(workshop_id="906", title="Addon", tags=["Build 42"],
+                         description="Mod ID: Addon\nRequires: SomeLibrary")
+    check(screen.worst(needy) == "warning",
+          "concerns: a dependency read from prose is a warning, since prose lies")
+
+    gone = WorkshopItem(workshop_id="907", title="Gone", tags=["Build 42"], missing=True)
+    check(screen.worst(gone) == "conflict",
+          "concerns: an item removed from the Workshop is a conflict")
+
+    # Targeting 41 must not turn every 41 mod into a conflict.
+    on41 = BrowseScreen(installed_mods=installed, build="41")
+    check(on41.worst(old) == "", "concerns: a Build 41 mod is fine when you target 41")
+    check(on41.worst(clean) == "conflict",
+          "concerns: and a Build 42 mod is the problem instead")
+
+
+def test_browse_screen_live() -> None:
+    """Mount the screen for real and press the keys, rather than calling methods.
+
+    Two things only a mounted screen can catch. A CSS property Textual does not
+    know kills the app at startup and nothing before this notices. And a key
+    binding does not fire while a text box has focus, because a letter typed into
+    an Input is text, not a shortcut: that is why pressing 's' to search only put
+    an 's' in the box. ENTER decides now, by what you typed.
+    """
+    import asyncio
+
+    from pzmodmanager import browse_screen as bs
+    from pzmodmanager.browse_screen import BrowseScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.steam import WorkshopItem
+    from pzmodmanager.tui import ModCheckApp
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = BrowseScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            seen["mounted"] = True
+
+            table = screen.query_one("#results")
+            seen["h_scrollbar"] = table.styles.scrollbar_size_horizontal
+            seen["bar_colour"] = str(table.styles.scrollbar_color)
+            seen["bar_active"] = str(table.styles.scrollbar_color_active)
+
+            first = WorkshopItem(workshop_id="1", title="Looked up first",
+                                 tags=["Build 42"])
+            screen.lookup_finished([first], [], {})
+            await pilot.pause()
+            item = WorkshopItem(
+                workshop_id="3783094058", title="Vanilla Outfits Expanded",
+                file_size=6_900_000, description="Mod ID: VanillaOutfitsExpanded",
+                tags=["Build 42"],
+            )
+            screen.lookup_finished([item], [], {"3783094058": None})
+            await pilot.pause()
+            seen["order"] = [i.workshop_id for i in screen.results]
+            seen["cursor_row"] = screen.query_one("#results").cursor_row
+            seen["focus_after_lookup"] = app.focused.id
+
+            await pilot.press("space")
+            await pilot.pause()
+            seen["marked_space"] = set(screen.chosen)
+            await pilot.press("space")
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            seen["marked_x"] = set(screen.chosen)
+            # What the cell actually draws, not what was handed to it. A raw
+            # "[x]" is stored fine and renders as nothing, so checking the
+            # stored value would have passed while the column stayed empty.
+            from io import StringIO
+
+            from rich.console import Console
+            from textual.coordinate import Coordinate
+
+            def drawn(value) -> str:
+                console = Console(file=StringIO(), width=12, no_color=True)
+                console.print(value)
+                return console.file.getvalue().strip()
+
+            cells = screen.query_one("#results")
+            seen["ticked_cell"] = drawn(cells.get_cell_at(Coordinate(0, 0)))
+            await pilot.press("X")
+            await pilot.pause()
+            seen["after_upper_x"] = set(screen.chosen)
+
+            opened: list[str] = []
+            real_open, bs.webbrowser.open = bs.webbrowser.open, opened.append
+            try:
+                screen.query_one("#find").focus()
+                await pilot.press(*"brita")
+                await pilot.press("enter")
+                await pilot.pause()
+            finally:
+                bs.webbrowser.open = real_open
+            seen["searched"] = opened[0] if opened else ""
+        return seen
+
+    seen = asyncio.run(run())
+
+    check(seen.get("mounted") is True,
+          "live browse: the screen mounts, so its CSS is valid")
+    check(seen.get("h_scrollbar") == 0,
+          "live browse: the results table has no horizontal scrollbar")
+    check("74" in seen.get("bar_colour", ""),
+          f"live browse: scrollbars are grey, not the theme blue (got {seen.get('bar_colour')})")
+    check("138" in seen.get("bar_active", ""),
+          "live browse: a dragged scrollbar stays grey too")
+    check(seen.get("focus_after_lookup") == "results",
+          "live browse: focus lands on the results, so SPACE reaches the screen")
+    check(seen.get("marked_space") == {"3783094058"},
+          "live browse: SPACE marks the highlighted row")
+    check(seen.get("marked_x") == {"3783094058"},
+          "live browse: 'x' marks it too")
+    check(seen.get("after_upper_x") == set(),
+          "live browse: 'X' works as well, so caps lock is not a wall")
+    check(seen.get("ticked_cell") == "[x]",
+          f"live browse: a ticked row really draws [x] (drew {seen.get('ticked_cell')!r})")
+    check("searchtext=brita" in seen.get("searched", ""),
+          "live browse: ENTER on a name searches Steam instead of doing nothing")
+    check(seen.get("order") == ["3783094058", "1"],
+          "live browse: the newest lookup goes to the top of the list")
+    check(seen.get("cursor_row") == 0,
+          "live browse: and the cursor lands on it, so the panel shows it")
+
+
+def test_stored_subscriptions(tmp: Path) -> None:
+    """The saved scan must remember what Steam said, including having said nothing."""
+    path = tmp / "sub.json"
+    scan = store.StoredScan(mod_count=3, subscribed_ids=["1", "2"])
+    store.save(scan, path)
+    back = store.load(path)
+    check(back is not None and back.subscribed_ids == ["1", "2"],
+          "store: the subscription list survives a round trip")
+
+    silent = store.StoredScan(mod_count=3, subscribed_ids=None)
+    store.save(silent, tmp / "none.json")
+    back = store.load(tmp / "none.json")
+    check(back is not None and back.subscribed_ids is None,
+          "store: never having asked Steam stays None, not an empty list")
+
+    empty = store.StoredScan(mod_count=3, subscribed_ids=[])
+    store.save(empty, tmp / "empty.json")
+    back = store.load(tmp / "empty.json")
+    check(back is not None and back.subscribed_ids == [],
+          "store: subscribed to nothing is kept apart from never having asked")
+
+
 def test_data_dir(tmp: Path) -> None:
     """The state files can be moved, and settings.json deliberately cannot.
 
@@ -553,6 +1018,13 @@ def main() -> int:
         test_store(tmp)
         test_settings(tmp)
         test_steam_bridge(tmp)
+        test_workshop_input()
+        test_browse_screen()
+        test_menu_greying()
+        test_reset_actions(tmp)
+        test_browse_concerns()
+        test_browse_screen_live()
+        test_stored_subscriptions(tmp)
         test_data_dir(tmp)
         test_settings_are_live()
         test_key_hints_match_bindings()

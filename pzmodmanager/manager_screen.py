@@ -146,6 +146,7 @@ class ManageScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Menu"),
         Binding("space", "toggle", "Toggle"),
+        Binding("x,X", "toggle", "Toggle"),
         Binding("a,A", "select_all", "All"),
         Binding("n,N", "select_none", "None"),
         Binding("o,O", "select_from_order", "From order"),
@@ -186,7 +187,8 @@ class ManageScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "SPACE toggles, '/' searches, 'a' all, 'n' none, 'o' from the load order\n"
+            "'x' or SPACE toggles, '/' searches, 'a' all, 'n' none, "
+            "'o' from the load order\n"
             "'d' adds dependencies, 'w' opens this mod on the Workshop, 'p' opens the "
             "first problem link\n"
             "'e' exports, 'u' unsubscribes the deselected mods from Steam, ESC returns",

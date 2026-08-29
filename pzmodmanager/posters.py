@@ -138,3 +138,63 @@ def embed_poster(path: Path | None, size: int = 96) -> str | None:
     except Exception as exc:
         log.warning("Could not embed the poster %s: %s", path, exc)
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Workshop previews, for items that are not on disk yet
+# --------------------------------------------------------------------------- #
+
+PREVIEW_DIR_NAME = "previews"
+PREVIEW_TIMEOUT = 12
+PREVIEW_MAX_BYTES = 4 * 1024 * 1024
+
+
+def preview_cache_dir() -> Path:
+    from .store import state_dir
+
+    return state_dir() / PREVIEW_DIR_NAME
+
+
+def fetch_preview(url: str, cache_dir: Path | None = None) -> Path | None:
+    """Download a Workshop preview image once, and keep it.
+
+    The Add mods screen shows items that are not installed, so there is no local
+    poster to draw: the picture has to come from the Workshop. It is cached by
+    the address it came from, so moving through a list of results a second time
+    costs nothing.
+
+    Never raises. No network, a slow server or an image Pillow cannot read all
+    mean the same thing to the caller, which is no picture.
+    """
+    if not url:
+        return None
+    import hashlib
+    import urllib.error
+    import urllib.request
+
+    folder = Path(cache_dir) if cache_dir else preview_cache_dir()
+    name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20] + ".img"
+    target = folder / name
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "pzmodmanager (+workshop preview)"}
+        )
+        with urllib.request.urlopen(request, timeout=PREVIEW_TIMEOUT) as response:
+            data = response.read(PREVIEW_MAX_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        log.info("No preview for %s: %s", url, exc)
+        return None
+
+    if not data or len(data) > PREVIEW_MAX_BYTES:
+        log.info("Preview for %s ignored: %d byte(s)", url, len(data or b""))
+        return None
+    try:
+        target.write_bytes(data)
+    except OSError as exc:
+        log.info("Could not cache the preview: %s", exc)
+        return None
+    return target
