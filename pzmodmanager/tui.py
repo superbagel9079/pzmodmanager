@@ -117,6 +117,25 @@ RETRO_CSS = """
     scrollbar-color-hover: #6a6a6a;
     scrollbar-color-active: #8a8a8a;
     scrollbar-corner-color: #000000;
+
+    /* The third family of leaking colour, after the accent and the scrollbars,
+       and the most confusing of the three because the stylesheet already said
+       what it wanted. Textual washes a widget with `background-tint:
+       $foreground 5%` when it is focused, in eighteen places across its own
+       widgets: Input, DataTable, OptionList, Tree, Select, Log, and so on. A
+       tint composites ON TOP of the background, so `background: #000000` is
+       obeyed and the panel still turns grey the moment you focus it.
+
+       Setting it here rather than per widget is deliberate. The seven scrollbar
+       properties above are the lesson: naming the widgets one at a time means
+       the next widget added leaks again. And a rule written here always wins,
+       whatever its selector, because Textual sorts a widget's own DEFAULT_CSS
+       below every rule the application supplies.
+
+       Zero alpha rather than a colour: the tint is then a no-op instead of
+       black paint, so a panel that deliberately sets its own background keeps
+       showing it. */
+    background-tint: #000000 0%;
 }
 Screen {
     background: #000000;

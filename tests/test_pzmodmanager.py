@@ -2642,6 +2642,91 @@ def test_crash_folders_are_not_the_current_order(tmp: Path) -> None:
         discovery.default_user_folder = original
 
 
+
+def test_focus_never_greys_the_background() -> None:
+    """Focusing a widget must not wash the black behind it.
+
+    Textual paints a focused widget with `background-tint: $foreground 5%`, and
+    it does so in eighteen places across its own widgets: Input, DataTable,
+    OptionList, Tree, Select, Log, Button and the rest. A tint composites on top
+    of the background rather than replacing it, so a panel that already says
+    `background: #000000` obeys that rule and still turns grey the instant it
+    takes focus. That is why the search box and the mod list looked lighter than
+    the screen around them while the stylesheet insisted they were black.
+
+    This is the third family of leaking colour, after the blue accent and the
+    seven scrollbar properties, and it is fixed the same way: once, in the `*`
+    rule, rather than widget by widget. So the check is the same shape too. It
+    walks every screen, focuses everything that can hold focus, and demands that
+    no widget anywhere carries a tint with any opacity at all.
+
+    Measured on the real thing before the fix: '#search' and '#mods' both came
+    back #B4B4B4 at 5%.
+    """
+    import asyncio
+
+    from pzmodmanager.apply_screen import ApplyScreen
+    from pzmodmanager.gamelog_screen import GameLogScreen
+    from pzmodmanager.manager_screen import ManageScreen, PinsScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.settings_screen import SettingsScreen
+    from pzmodmanager.tui import ModCheckApp
+
+    async def run() -> dict:
+        seen: dict = {"tinted": [], "focused": 0, "checked": 0}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(120, 44)) as pilot:
+            mods = [sel.ModRef(mod_id=f"M{i}", name=f"Mod {i}") for i in range(5)]
+            screens = [
+                None,  # the menu, reached by pushing nothing
+                ManageScreen(mods, []),
+                PinsScreen([("A", "B")], sel.index_by_key(mods)),
+                ApplyScreen(["M0"]),
+                GameLogScreen(Path("/nowhere/console.txt")),
+                SettingsScreen(Settings(), None),
+            ]
+
+            def sweep(screen, label: str) -> None:
+                for widget in screen.query("*"):
+                    tint = widget.styles.background_tint
+                    seen["checked"] += 1
+                    if tint is not None and tint.a:
+                        seen["tinted"].append(
+                            (label, widget.id or type(widget).__name__, tint.hex)
+                        )
+
+            for screen in screens:
+                if screen is not None:
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                await pilot.pause()
+                here = app.screen
+                label = type(here).__name__
+                sweep(here, label)
+                # Nothing is tinted at rest, so focus is where it would show.
+                for widget in here.query("*"):
+                    if not widget.focusable:
+                        continue
+                    widget.focus()
+                    await pilot.pause()
+                    seen["focused"] += 1
+                    sweep(here, f"{label} (focus {widget.id or type(widget).__name__})")
+                if screen is not None:
+                    app.pop_screen()
+                    await pilot.pause()
+        return seen
+
+    shown = asyncio.run(run())
+    check(shown["focused"] > 0,
+          f"tint: something was actually focused, or this checks nothing "
+          f"(focused {shown['focused']})")
+    check(shown["checked"] > 50,
+          f"tint: every screen was walked (got {shown['checked']} widget states)")
+    check(not shown["tinted"],
+          f"tint: no widget washes its background when focused "
+          f"(got {shown['tinted'][:4]})")
+
+
 def main() -> int:
     test_script_parser()
     test_branch_selection()
@@ -2680,6 +2765,7 @@ def main() -> int:
         test_data_dir(tmp)
         test_settings_are_live()
         test_nothing_is_blue()
+        test_focus_never_greys_the_background()
         test_key_hints_match_bindings()
         test_steam_child_process(tmp)
         test_steam_output_capture()
