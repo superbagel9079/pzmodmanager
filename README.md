@@ -38,6 +38,7 @@ Client-side tool. Targets Build 42 by default; the Build 41 layout is handled to
 - [Part IV. Adding mods from the Workshop](#part-iv-adding-mods-from-the-workshop)
 - [Part V. Mod images](#part-v-mod-images)
 - [Part VI. Workshop links](#part-vi-workshop-links)
+- [Part VII. When the game runs out of memory](#part-vii-when-the-game-runs-out-of-memory)
 
 **[Chapter IV. Steam](#chapter-iv-steam)**
 
@@ -252,7 +253,20 @@ want everything in the terminal.
 python -m pzmodmanager --tui
 ```
 
-#### A. The main menu
+#### A. One theme, and nothing blue
+
+Textual ships a blue theme: `$primary` is `#0178D4`, and it comes out as the
+focus border on an option list or a search box, in selection highlights, in
+progress bars, and in widgets this project never names in its own stylesheet.
+
+The scrollbars taught the lesson first. Setting `scrollbar-color` was not
+enough: there are seven separate scrollbar colours, and any one left alone shows
+the accent through. Chasing a colour selector by selector is a game you lose one
+widget at a time, so the theme itself is replaced with a monochrome one, once,
+in `MONOCHROME`. A test walks every screen and fails if any border actually
+drawn is a colour the interface does not use.
+
+#### B. The main menu
 
 Arrow keys to move, ENTER to select.
 
@@ -296,7 +310,7 @@ settings, rather than leaving you to open an empty screen and wonder.
 - **Settings** edits everything the tool uses and saves it, so nothing has to be
   retyped on the command line next time.
 
-#### B. The results screen
+#### C. The results screen
 
 The findings are on the left, the detail on the right, and
 the current line is in inverse video. Severity is read from the marker rather
@@ -877,6 +891,147 @@ Every mod that came from the Workshop is linked to its page, in three places:
 
 Mods you installed by hand have no page, and are shown as plain text rather than
 a dead link. `--print-links` prints the same list to the terminal.
+
+### Part VII. When the game runs out of memory
+
+This part is not about the tool. It is about the machine the tool is helping you
+load two hundred and fifty mods onto, because past a certain count the thing
+that breaks is not the load order, it is memory. The symptoms are easy to
+misread as a mod conflict, and every hour spent bisecting a mod list is an hour
+wasted if the real problem is the launcher configuration.
+
+#### A. What it looks like
+
+The game closes. Not a crash dialog, not an error in the chat, just gone. And
+the log is the tell: it stops mid-sentence, with **no exception and no stack
+trace**.
+
+That absence is the diagnosis. A Lua error leaves a `WARN : Lua` line. A Java
+error leaves an exception and a stack. A process that has been denied memory by
+the operating system leaves nothing at all, because there was no memory left to
+write the message with.
+
+#### B. Where the real report is
+
+The game writes a JVM crash report next to its own executable, not in the
+`Zomboid` folder where the logs live:
+
+```
+Steam\steamapps\common\ProjectZomboid\hs_err_pid<number>.log
+```
+
+The newest one is the one you want. Its first three lines say it plainly:
+
+```
+# There is insufficient memory for the Java Runtime Environment to continue.
+# Native memory allocation (malloc) failed to allocate 5483736 bytes.
+```
+
+#### C. The three numbers that matter
+
+Further down the same file:
+
+```
+Memory: system-wide physical 32167M (6437M free)
+TotalPageFile size 36263M (AvailPageFile size 4M)
+current process WorkingSet: 9601M, peak: 9601M
+ZHeap  used 2698M, capacity 3072M, max capacity 3072M
+```
+
+Read them in this order.
+
+`AvailPageFile` is how much **commit** Windows had left. Four megabytes here
+means the next allocation of any size fails, whatever it is. This is the one
+that kills the process, and note that physical RAM was not the problem: six
+gigabytes were still free. Windows refuses on the commit limit, not on RAM.
+
+`TotalPageFile` minus physical RAM gives your page file size. Above, that is
+about four gigabytes on a thirty-two gigabyte machine, which is the Windows
+default and is far too small for this workload.
+
+`ZHeap used` against `max capacity` is the Java heap. Eighty-eight percent full
+above. A saturated heap does not usually kill the process, but it does make the
+collector stall the game for hundreds of milliseconds at a time, which you feel
+as freezing rather than as low frame rate.
+
+You can read the same numbers on a running machine without waiting for a crash.
+This shows the page file's real size and how much of it is in use:
+
+```powershell
+Get-CimInstance Win32_PageFileUsage | Select-Object Name, AllocatedBaseSize, CurrentUsage, PeakUsage
+```
+
+And this shows how close the system is to its commit limit:
+
+```powershell
+Get-CimInstance Win32_OperatingSystem | Select-Object @{N='FreeRamMB';E={[math]::Round($_.FreePhysicalMemory/1KB)}}, @{N='CommitUsedMB';E={[math]::Round(($_.TotalVirtualMemorySize-$_.FreeVirtualMemory)/1KB)}}, @{N='CommitLimitMB';E={[math]::Round($_.TotalVirtualMemorySize/1KB)}}
+```
+
+Both only read. Run them while the game is loaded, since that is when the
+numbers mean something.
+
+#### D. The fix, in an order that matters
+
+**Step one, enlarge the page file.**
+
+Open `Advanced system settings`, then `Performance / Settings`, then the
+`Advanced` tab, then `Virtual memory / Change`. Untick the automatic
+management, choose `Custom size`, and set **16384** for both the initial and the
+maximum size. Apply, and reboot.
+
+Write down the current values before you change them. This is a system setting,
+and being able to put it back exactly as it was is worth the ten seconds.
+
+Automatic management is not enough here, which is worth understanding rather
+than taking on faith: Windows does grow the page file on demand, but it grows it
+slowly, and a game that allocates in bursts during world load fails before the
+growth arrives. A fixed size is committed up front and is always there.
+
+**Step two, and only after the reboot, raise the Java heap.**
+
+In the game's install folder, `ProjectZomboid64.json` holds the launcher
+arguments. Raise the heap cap:
+
+```
+"-Xmx3072m"   ->   "-Xmx4096m"
+```
+
+Copy the file to `ProjectZomboid64.json.backup` first. Steam replaces this file
+without warning when it verifies the game's files, and you will want to know
+what it contained.
+
+**Why that order and not the reverse.** The heap is committed memory like
+anything else. Raising it while the commit limit is already saturated does not
+give the game more room, it makes the next allocation fail sooner. The page file
+creates the headroom, and only then does a larger heap become an improvement
+instead of an accelerant.
+
+#### E. Freezing is not the same problem as crashing
+
+Two symptoms, two causes, and they are worth separating before changing
+anything.
+
+If you run `Tempo_PerfKit` or a similar profiler, it prints a spike attribution
+line every minute:
+
+```
+Spikes>50ms: total=15 | moving=0 chunk=0 menu=0 uncat=15 | worst=747ms
+```
+
+`uncat` means the game could not attribute the stall to any of its own work: not
+movement, not terrain streaming, not menus. Stalls the game cannot explain come
+from outside it, which is where garbage collection and paging live.
+
+But before concluding anything from one such line, look at the next two. The
+first minute after a world loads is always bad, because that is when the
+animation cache fills, the shaders compile and the terrain streams. On a two
+hundred and fifty mod list, a first window with fifteen unattributed spikes
+followed by two windows with **zero** is a world settling in, not a problem. It
+is only a problem if the unattributed spikes are still there three minutes later.
+
+The distinction is worth holding onto because the reflex, when the game
+stutters, is to start disabling mods. If the stalls stop on their own after a
+minute, disabling mods proves nothing and costs an evening.
 
 ## Chapter IV. Steam
 
