@@ -782,6 +782,59 @@ def test_order_hints() -> None:
           "hints: nothing is said about a mod you did not select")
 
 
+def test_sort_disturbs_a_working_order_as_little_as_possible() -> None:
+    """The sort must respect dependencies AND keep a working order nearly intact.
+
+    This is a real regression, caught by the game's own log. The sort used to
+    emit whole waves: everything with no unmet dependency, then everything
+    freed by that, and so on. `preferred` could only shuffle within a wave, so
+    a mod declaring no require= line always came out ahead of every mod that
+    declared one, however late the working order had put it.
+
+    On a real 246 mod set that put DynamicVehicleSnow, which patches vehicle
+    skins and declares nothing, a hundred and eighty places ahead of the KI5
+    vehicles it patches, which all declare require=damnlib. The game answered
+    with 132 "template not found" errors that the previous order did not have.
+
+    Picking one ready mod at a time, always the lowest ranked, fixes it: a mod
+    now moves only when a real dependency forces it to.
+    """
+    lib = sel.ModRef(mod_id="Lib")
+    cars = [sel.ModRef(mod_id=f"Car{i}", requires=["Lib"]) for i in range(5)]
+    # Declares nothing, and the working order deliberately puts it last.
+    patch = sel.ModRef(mod_id="SnowPatch")
+    by_key = sel.index_by_key([lib, *cars, patch])
+    keys = set(by_key)
+    working = ["Lib"] + [c.mod_id for c in cars] + ["SnowPatch"]
+
+    out, cycle = sel.topological_order(by_key, keys, preferred=working)
+    check(not cycle, "stable: nothing circular here")
+    check(out == working,
+          f"stable: a working order that already satisfies every dependency "
+          f"comes back unchanged (got {out})")
+    check(out.index("SnowPatch") > max(out.index(c.mod_id) for c in cars),
+          "stable: the mod with no requirements stays after the mods that have one")
+
+    # A dependency really is enforced when the working order breaks it.
+    broken = [c.mod_id for c in cars] + ["SnowPatch", "Lib"]
+    fixed, _ = sel.topological_order(by_key, keys, preferred=broken)
+    check(fixed.index("Lib") < min(fixed.index(c.mod_id) for c in cars),
+          f"stable: a broken order is corrected, not preserved (got {fixed})")
+    # SnowPatch lands first here, and that is correct rather than a slip: the
+    # cars are all still waiting on Lib, so the only ready mods are Lib and
+    # SnowPatch, and SnowPatch is the lower ranked of the two. What a stable
+    # sort promises is the lowest ranked AVAILABLE mod, not the lowest ranked.
+    check([m for m in fixed if m.startswith("Car")] == [c.mod_id for c in cars],
+          f"stable: and the mods that were not forced keep their relative order "
+          f"(got {fixed})")
+
+    # With no preferred order at all it must still be a valid topological sort.
+    plain, _ = sel.topological_order(by_key, keys)
+    check(plain.index("Lib") < min(plain.index(c.mod_id) for c in cars),
+          "stable: with nothing to preserve it still puts the library first")
+    check(sorted(plain) == sorted(working), "stable: and loses nothing")
+
+
 def test_order_view() -> None:
     """'o' shows the order that gets exported, instead of hiding it in a file.
 
@@ -2323,6 +2376,79 @@ def test_settings_are_live() -> None:
           "live: an option you did not type is still read from the settings")
 
 
+def test_nothing_is_blue() -> None:
+    """The interface is monochrome, and Textual's default theme is not.
+
+    $primary is #0178D4 and it surfaces wherever a widget is focused: the border
+    of an OptionList, of an Input, selection highlights, progress bars, and in
+    widgets this project never names in its own stylesheet. Chasing it one
+    selector at a time is the same losing game the scrollbars were, where seven
+    separate properties each had to be set or the accent showed through.
+
+    So the theme itself is replaced, once. This checks the replacement is in
+    force and that every border actually drawn on every screen is a colour the
+    interface uses.
+    """
+    import asyncio
+
+    from pzmodmanager.apply_screen import ApplyScreen
+    from pzmodmanager.gamelog_screen import GameLogScreen
+    from pzmodmanager.manager_screen import ManageScreen, PinsScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.settings_screen import SettingsScreen
+    from pzmodmanager.tui import MONOCHROME, ModCheckApp
+
+    # Black, white, and the greys the stylesheet uses. Nothing else.
+    allowed = {(0, 0, 0), (255, 255, 255), (180, 180, 180),
+               (74, 74, 74), (106, 106, 106), (138, 138, 138), (26, 26, 26)}
+
+    async def run() -> dict:
+        seen: dict = {"stray": [], "theme": ""}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(120, 44)) as pilot:
+            seen["theme"] = app.theme
+            seen["blue"] = [
+                key for key, value in app.theme_variables.items()
+                if isinstance(value, str) and value.lower().startswith("#0178d4")
+            ]
+            mods = [sel.ModRef(mod_id=f"M{i}", name=f"Mod {i}") for i in range(5)]
+            screens = [
+                ManageScreen(mods, []),
+                PinsScreen([("A", "B")], sel.index_by_key(mods)),
+                ApplyScreen(["M0"]),
+                GameLogScreen(Path("/nowhere/console.txt")),
+                SettingsScreen(Settings(), None),
+            ]
+            for screen in screens:
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                for widget in screen.query("*"):
+                    for edge in (widget.styles.border_top, widget.styles.border_left):
+                        # An empty border type means nothing is drawn, whatever
+                        # placeholder colour sits beside it.
+                        if not edge or not edge[0] or edge[1] is None:
+                            continue
+                        if tuple(edge[1].rgb) not in allowed:
+                            seen["stray"].append(
+                                (type(screen).__name__, widget.id or type(widget).__name__,
+                                 edge[0], edge[1].hex)
+                            )
+                app.pop_screen()
+                await pilot.pause()
+        return seen
+
+    shown = asyncio.run(run())
+    check(shown["theme"] == MONOCHROME.name,
+          f"colour: the monochrome theme is the one in force (got {shown['theme']})")
+    check(not shown["blue"],
+          f"colour: no theme variable still holds the default blue "
+          f"(got {shown['blue']})")
+    check(not shown["stray"],
+          f"colour: every border drawn on every screen is monochrome "
+          f"(got {shown['stray'][:4]})")
+
+
 def test_key_hints_match_bindings() -> None:
     """Every key named in the on screen help must be a key that is bound.
 
@@ -2449,6 +2575,7 @@ def main() -> int:
         test_problem_filter()
         test_toggle_keeps_the_view_still()
         test_order_hints()
+        test_sort_disturbs_a_working_order_as_little_as_possible()
         test_order_view()
         test_game_log(tmp)
         test_apply_to_save(tmp)
@@ -2466,6 +2593,7 @@ def main() -> int:
         test_stored_subscriptions(tmp)
         test_data_dir(tmp)
         test_settings_are_live()
+        test_nothing_is_blue()
         test_key_hints_match_bindings()
         test_steam_child_process(tmp)
         test_steam_output_capture()

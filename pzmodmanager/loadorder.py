@@ -123,6 +123,13 @@ def parse_plain(text: str, source: str) -> LoadOrder:
 def load_order_from_file(path: Path, list_name: str | None = None) -> LoadOrder:
     text = read_text_tolerant(path)
     lowered = text.lower()
+    # A save's mods.txt, recognised by its own shape rather than its name, since
+    # the name is shared with nothing else but the shape is unmistakable.
+    if "mod =" in lowered or "mod=" in lowered:
+        order = parse_save_mods(text, str(path))
+        if order.mod_ids:
+            log.info("Load order read from a save: %s (%d mods)", path, len(order.mod_ids))
+            return order
     if "mods=" in lowered and "=" in lowered:
         order = parse_ini(text, str(path))
         if order.mod_ids or order.workshop_ids:
@@ -136,14 +143,53 @@ def load_order_from_file(path: Path, list_name: str | None = None) -> LoadOrder:
     return order
 
 
+def parse_save_mods(text: str, source: str) -> LoadOrder:
+    """A save's own mods.txt, which is where Build 42 keeps the real order.
+
+        mods
+        {
+            mod = ZombieBuddy,
+            mod = ETO_B,
+        }
+
+    This is the authoritative source on a single player machine, and it was
+    missing: the tool looked only for Lua/saved_modlists.txt, which does not
+    exist in Build 42. With no order found, every mod came back with no
+    order_index, so the sort had no existing order to preserve and was free to
+    move anything anywhere. That is how a mod which patches vehicle skins ended
+    up ahead of the vehicles.
+    """
+    from .savegame import parse_mods
+
+    ids = parse_mods(text)
+    return LoadOrder(mod_ids=ids, source=source, kind="save")
+
+
 def default_order_candidates() -> list[Path]:
-    """Where to look for a client-side load order."""
+    """Where to look for a client-side load order, best source first.
+
+    The save comes first because it is what the game actually reads. The Lua
+    list is kept as a fallback for older builds that had one.
+    """
     from .discovery import default_user_folder
+    from .savegame import MODS_FILE
 
     user = default_user_folder()
     if not user:
         return []
-    return [p for p in (user / "Lua" / "saved_modlists.txt",) if p.is_file()]
+    found: list[Path] = []
+    saves = user / "Saves"
+    if saves.is_dir():
+        try:
+            candidates = [p for p in saves.glob(f"*/*/{MODS_FILE}") if p.is_file()]
+            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            found.extend(candidates[:1])
+        except OSError as exc:
+            log.warning("Could not look for a save mod list: %s", exc)
+    legacy = user / "Lua" / "saved_modlists.txt"
+    if legacy.is_file():
+        found.append(legacy)
+    return found
 
 
 def apply_order(mods: list, order: LoadOrder) -> list[str]:

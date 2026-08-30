@@ -20,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import Screen
+from textual.theme import Theme
 from textual.widgets import DataTable, Log, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -82,12 +83,32 @@ MARKER = {
 }
 
 # Shared look, applied to every screen.
+# Textual's default theme is blue: $primary is #0178D4, and it comes out as the
+# focus border on an OptionList or an Input, in progress bars, in selection
+# highlights, and in widgets this project never names. Chasing it one selector
+# at a time is the same losing game as the scrollbars below, so the theme itself
+# is replaced. One definition, and nothing can leak a colour the interface does
+# not use.
+MONOCHROME = Theme(
+    name="pzmodmanager",
+    primary="#ffffff",
+    secondary="#b4b4b4",
+    accent="#ffffff",
+    foreground="#b4b4b4",
+    background="#000000",
+    surface="#000000",
+    panel="#000000",
+    success="#b4b4b4",
+    warning="#b4b4b4",
+    error="#b4b4b4",
+    dark=True,
+)
+
 RETRO_CSS = """
-/* Textual paints scrollbars with the theme accent, which is blue and lands in
-   the middle of a deliberately monochrome interface. Setting scrollbar-color
-   alone is not enough: there are separate colours for hover, active, the
-   background and the corner, and any one left alone shows the accent through.
-   The universal selector catches widgets this file never names. */
+/* Scrollbars are their own family of colours, seven of them, and any one left
+   alone shows the theme through. The theme itself is monochrome now (see
+   MONOCHROME above), so this is belt and braces rather than the fix, but it
+   also sets the greys the interface actually wants rather than white. */
 * {
     scrollbar-background: #000000;
     scrollbar-background-hover: #000000;
@@ -800,6 +821,8 @@ class ModCheckApp(App):
 
     def on_mount(self) -> None:
         self.title = "pzmodmanager"
+        self.register_theme(MONOCHROME)
+        self.theme = MONOCHROME.name
         self.push_screen(MenuScreen())
         if self.open_manager and self.stored is not None:
             from .manager_screen import ManageScreen

@@ -324,19 +324,40 @@ def topological_order(
     for first, second in pin_edges(by_key, keys, pins):
         waiting_on[second].add(first)
 
+    # Who is waiting on each mod, so releasing one is cheap.
+    unlocks: dict[str, list[str]] = {k: [] for k in keys}
+    for key, deps in waiting_on.items():
+        for dep in deps:
+            unlocks[dep].append(key)
+
+    # One at a time, always the lowest ranked mod that is ready, rather than a
+    # whole wave at once. The difference is not cosmetic. Emitting waves means
+    # every mod with no declared dependency comes out before every mod that has
+    # one, whatever the preferred order says, and `preferred` can then only
+    # shuffle within a wave. On a real set that put a mod which patches vehicle
+    # skins a hundred and eighty places ahead of the vehicles it patches, purely
+    # because it declares no require= line and they declare one. The game then
+    # logged 132 "template not found" errors that the previous order did not
+    # have. Picking one at a time keeps a working order almost intact: a mod
+    # moves only when a real dependency forces it.
+    import heapq
+
+    remaining = {k: set(deps) for k, deps in waiting_on.items()}
+    ready = [(tie_break(k), k) for k, deps in remaining.items() if not deps]
+    heapq.heapify(ready)
+
     ordered: list[str] = []
-    remaining = dict(waiting_on)
-    while remaining:
-        ready = sorted(
-            (k for k, deps in remaining.items() if not deps), key=tie_break
-        )
-        if not ready:
-            break  # everything left is in a cycle
-        for key in ready:
-            ordered.append(key)
-            del remaining[key]
-        for deps in remaining.values():
-            deps.difference_update(ready)
+    while ready:
+        _rank, key = heapq.heappop(ready)
+        ordered.append(key)
+        del remaining[key]
+        for dependent in unlocks[key]:
+            waiting = remaining.get(dependent)
+            if waiting is None:
+                continue
+            waiting.discard(key)
+            if not waiting:
+                heapq.heappush(ready, (tie_break(dependent), dependent))
 
     cycle = sorted(remaining, key=tie_break)
     if cycle:

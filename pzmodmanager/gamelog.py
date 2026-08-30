@@ -44,6 +44,10 @@ SHAPE_WIDTH = 130
 # few enough that a group of six thousand does not fill the screen.
 SAMPLES_PER_GROUP = 3
 
+# Files every mod has one of. The game logs them as overrides like any other,
+# but two mods having their own icon is not a collision.
+PER_MOD_FILES = {"icon.png", "preview.png", "poster.png", "mod.info"}
+
 
 def default_console_path() -> Path | None:
     """Where the game writes its log, if that folder exists on this machine."""
@@ -131,6 +135,10 @@ class GameLog:
     """One session, as the game recorded it."""
 
     source: str = ""
+    # How many launches this file holds, and which one is reported. The game
+    # appends to console.txt rather than replacing it, so a file can describe
+    # several runs and reporting them together doubles every number.
+    sessions: int = 1
     loaded: list[str] = field(default_factory=list)
     contested: list[Contested] = field(default_factory=list)
     errors: list[ErrorGroup] = field(default_factory=list)
@@ -187,19 +195,44 @@ class GameLog:
 
 
 def parse(text: str, source: str = "") -> GameLog:
-    """Read a console.txt. Never raises: a truncated log still parses."""
+    """Read a console.txt and report its most recent launch.
+
+    The game appends to this file rather than replacing it, so it can hold
+    several runs. Reporting them together is not just untidy, it is wrong: two
+    launches of the same 246 mods came out as 492 mods loaded and twice the
+    contested files, which reads as a catastrophe rather than a repeat.
+
+    The boundary needs no marker from the game. A run loads each mod once, so
+    the moment a mod is announced that this run has already loaded, a new run
+    has begun. Everything accumulated so far is dropped and counting restarts.
+
+    Never raises: a truncated log still parses.
+    """
     result = GameLog(source=source)
     claims: dict[str, list[str]] = defaultdict(list)
     shapes: dict[str, ErrorGroup] = {}
     lines = text.splitlines()
     result.line_count = len(lines)
+    seen: set[str] = set()
+
+    def restart() -> None:
+        result.sessions += 1
+        result.loaded.clear()
+        result.override_count = 0
+        claims.clear()
+        shapes.clear()
+        seen.clear()
 
     for line in lines:
         stripped = line.strip()
 
         loading = _LOADING.match(stripped)
         if loading:
-            result.loaded.append(loading.group(1))
+            mod_id = loading.group(1)
+            if mod_id.strip().lower() in seen:
+                restart()
+            seen.add(mod_id.strip().lower())
+            result.loaded.append(mod_id)
             continue
 
         override = _OVERRIDE.search(stripped)
@@ -225,10 +258,13 @@ def parse(text: str, source: str = "") -> GameLog:
             if quoted not in group.subjects:
                 group.subjects.append(quoted)
 
+    # Every mod ships its own icon.png and preview.png, and the game logs each
+    # one as an override. They are not a shared file two mods fight over, so
+    # counting them made 177 mods look like they were in conflict over an icon.
     result.contested = [
         Contested(path=path, claimants=mods)
         for path, mods in claims.items()
-        if len(mods) > 1
+        if len(mods) > 1 and path not in PER_MOD_FILES
     ]
     result.contested.sort(key=lambda c: (-len(c.claimants), c.path))
     result.errors = sorted(shapes.values(), key=lambda g: -g.count)
