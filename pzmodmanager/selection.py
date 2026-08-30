@@ -328,6 +328,38 @@ def probable_typo(needed: str, by_key: dict) -> str | None:
     return by_key[key].mod_id
 
 
+@dataclass
+class OrderNote:
+    """A load order instruction an author wrote in prose, and where to read it.
+
+    Kept apart from Problem on purpose. It is not a problem: nothing is wrong
+    with the selection, there is nothing to fix, and putting these in the
+    problems panel made three quotations look like three new errors. It is a
+    pointer to a page, and it is reported as one.
+    """
+
+    mod_id: str
+    lines: list[str] = field(default_factory=list)
+    url: str = ""
+
+
+def order_notes(by_key: dict[str, ModRef], keys: set[str]) -> list[OrderNote]:
+    """The selected mods whose Workshop page says where to place them."""
+    notes: list[OrderNote] = []
+    for key in sorted(keys):
+        ref = by_key.get(key)
+        if ref is None or not ref.order_notes:
+            continue
+        notes.append(
+            OrderNote(
+                mod_id=ref.mod_id,
+                lines=list(ref.order_notes),
+                url=ref.workshop_url or "",
+            )
+        )
+    return notes
+
+
 def validate(
     by_key: dict[str, ModRef],
     keys: set[str],
@@ -410,33 +442,6 @@ def validate(
                         links=_links_for(by_key, [ref.mod_id, target]),
                     )
                 )
-
-        if ref.order_notes:
-            # Deliberately not resolved into an order. The line is prose: it may
-            # name a mod that is not installed, it may be telling you what not to
-            # do, and acting on it would move a mod on the strength of a regular
-            # expression. Quoting it and linking the page is the honest limit.
-            #
-            # Medium on purpose. Low is what the typo noise sits at and what gets
-            # hidden first, and this is the one thing on the page that no other
-            # part of the tool can see for you.
-            problems.append(
-                Problem(
-                    kind="order_note",
-                    severity=Severity.MEDIUM,
-                    message=(
-                        f"{ref.mod_id} gives load order instructions on its "
-                        f"Workshop page: \"{ref.order_notes[0]}\""
-                    ),
-                    mods=[ref.mod_id],
-                    fix_hint=(
-                        "Requirements the tool can order for you are in require=. "
-                        "This one is only written in the description, so check the "
-                        "page and place the mod by hand."
-                    ),
-                    links=_links_for(by_key, [ref.mod_id]),
-                )
-            )
 
         for other in ref.incompatible:
             okey = other.strip().lower()

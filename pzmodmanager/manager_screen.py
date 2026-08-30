@@ -37,6 +37,7 @@ from .selection import (
     export_server_ini,
     export_text,
     index_by_key,
+    order_notes,
     summarise,
     unsubscribe_plan,
     topological_order,
@@ -57,6 +58,10 @@ PROBLEM_VIEWS = [
     ("hiding low", 2),
     ("critical only", 4),
 ]
+
+# How many load order notes the panel quotes before summarising the rest. A full
+# selection of two hundred mods turns up around thirty of them.
+NOTES_SHOWN = 8
 
 
 _OWN_CSS = """
@@ -489,6 +494,29 @@ class ManageScreen(Screen):
             add("")
         if len(shown) > 20:
             add(f"  ... {len(shown) - 20} more")
+
+        # Its own block, with its own count, below the problems and outside
+        # their total. These are quotations from a Workshop page, not defects:
+        # listing them as problems made three sentences look like three new
+        # errors and put an exclamation mark on mods with nothing wrong. Below
+        # rather than above because a large selection produces a lot of them,
+        # and they must never push the actual problems off the top.
+        notes = order_notes(self.by_key, self.selected)
+        if notes:
+            lines += [("", False), (rule, False), ("", False),
+                      (f"LOAD ORDER NOTES ({len(notes)})", True), ("", False)]
+            add("  Not problems, and not counted as any. These pages say where")
+            add("  to place the mod, in words no tool can turn into an order.")
+            add("")
+            for note in notes[:NOTES_SHOWN]:
+                add(f"  {note.mod_id}")
+                for line in note.lines:
+                    add(f"      {line}")
+                if note.url:
+                    add(f"      {note.url}")
+                add("")
+            if len(notes) > NOTES_SHOWN:
+                add(f"  ... {len(notes) - NOTES_SHOWN} more")
 
         self.query_one("#side", Static).update(_panel(lines))
 

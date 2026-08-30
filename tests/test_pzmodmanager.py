@@ -755,20 +755,31 @@ def test_order_hints() -> None:
     check(len(order_hints(long_line)[0]) <= 200,
           "hints: a very long line is cut rather than flooding the panel")
 
-    # And it has to reach the manager as a problem, at a level that survives
-    # hiding the low noise: this is the one thing on the page the tool cannot
-    # work out for itself.
-    ref = sel.ModRef(mod_id="Skin", name="Skin",
+    for aside in [
+        "# check correct mod load order for compatibility with custom vehicles",
+        "// remember to load it after the framework",
+        "1.4.2 fixed the mod loading before its dependency",
+    ]:
+        check(order_hints(aside) == [],
+              f"hints: a comment or changelog line is not an instruction "
+              f"({aside[:40]!r})")
+
+    # A note is NOT a problem, and reaching the manager as one was a mistake:
+    # three quoted sentences appeared as three new errors under a heading that
+    # says PROBLEMS, and put an exclamation mark on mods with nothing wrong.
+    ref = sel.ModRef(mod_id="Skin", name="Skin", workshop_id="42",
                      order_notes=["Load this after Spongie's Customisation"])
-    problems = sel.validate({"skin": ref}, {"skin"}, [])
-    notes = [p for p in problems if p.kind == "order_note"]
-    check(len(notes) == 1, "hints: a note becomes one problem on the selection")
-    check(notes[0].severity is Severity.MEDIUM,
-          f"hints: reported above the low noise (got {notes[0].severity.label})")
-    check("Spongie" in notes[0].message,
+    check(sel.validate({"skin": ref}, {"skin"}, []) == [],
+          "hints: a note raises no problem and does not touch the problem count")
+    notes = sel.order_notes({"skin": ref}, {"skin"})
+    check(len(notes) == 1 and notes[0].mod_id == "Skin",
+          "hints: it is collected separately, against its mod")
+    check("Spongie" in notes[0].lines[0],
           "hints: the author's own words are quoted, not paraphrased")
-    check(sel.validate({"skin": sel.ModRef(mod_id="Skin")}, {"skin"}, []) == [],
-          "hints: a mod with nothing to say produces nothing")
+    check(notes[0].url.endswith("42"),
+          "hints: with the page to go and read")
+    check(sel.order_notes({"skin": ref}, set()) == [],
+          "hints: nothing is said about a mod you did not select")
 
 
 def test_order_view() -> None:

@@ -392,11 +392,33 @@ is written on the Workshop page, in sentences:
             NEEDS TO BE LOADED AFTER ELLIE'S TATTOO PARLOR
 ```
 
-Those lines are pulled out of the description at scan time, quoted in the side
-panel of the mod they belong to, and reported as a `medium` problem so they
-survive hiding the low noise. On a real set of 203 subscriptions this finds 15
-items. It is deliberately conservative: bug report boilerplate ("include your mod
-list/load order"), headings, and "load order doesn't matter" are all rejected.
+Those lines are pulled out of the description at scan time and quoted twice: in
+the side panel of the mod they belong to, and in a block of their own at the
+bottom of the panel:
+
+```
+  LOAD ORDER NOTES (3)
+
+    Not problems, and not counted as any. These pages say where
+    to place the mod, in words no tool can turn into an order.
+
+    ElyonLib
+        Load it above those mods in the mod list.
+        https://steamcommunity.com/sharedfiles/filedetails/?id=3384377738
+```
+
+**They are not problems and are not counted as problems.** The first version of
+this put them in the problems panel at `medium` severity, which was a mistake
+worth recording: three quoted sentences appeared as three new errors under a
+heading that says PROBLEMS, complete with an exclamation mark in the list beside
+mods that had nothing wrong with them. The problem total is for defects. A
+quotation from a Workshop page is not one.
+
+The detector is deliberately conservative. On a real set of 203 subscriptions it
+finds 14 items. Bug report boilerplate ("include your mod list/load order"),
+headings, bare mod names, "load order doesn't matter", and comment or changelog
+lines (`# check correct mod load order...` sitting under a Known issues heading)
+are all rejected.
 
 **Nothing is reordered on the strength of a sentence.** A line of prose is not a
 dependency: it may name a mod you do not have, it may be telling you what not to

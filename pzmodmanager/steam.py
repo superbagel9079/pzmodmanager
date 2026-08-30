@@ -436,6 +436,12 @@ _ORDER_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+# Comment markers and changelog stamps. "# check correct mod load order for
+# compatibility with custom vehicles like bikes" sits under a "Known issues"
+# heading: it is a remark, not an instruction, and reading it as one put a mod
+# on the list that had nothing for the user to do.
+_ORDER_ASIDE = re.compile(r"^(?:#|//|v?\d+\.\d+|\[?\d+\.\d+[\].]?)")
+
 ORDER_HINT_LIMIT = 3
 _ORDER_HINT_WIDTH = 200
 
@@ -459,6 +465,8 @@ def order_hints(description: str) -> list[str]:
         # Order Sorter") match the phrases without instructing anyone to do
         # anything. An actual sentence is longer than four words.
         if len(line) < 12 or len(line.split()) < 5:
+            continue
+        if _ORDER_ASIDE.match(line):
             continue
         if not _ORDER_PHRASE.search(line) or _ORDER_NOISE.search(line):
             continue
