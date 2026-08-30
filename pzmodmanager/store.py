@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 STORE_NAME = "last-scan.json"
 SELECTION_NAME = "selection.json"
+PINS_NAME = "load-order-pins.json"
 STORE_VERSION = 2
 
 _SEVERITY_BY_LABEL = {s.label: s for s in Severity}
@@ -86,6 +87,10 @@ def default_steam_cache_path() -> Path:
 
 def default_selection_path() -> Path:
     return state_dir() / SELECTION_NAME
+
+
+def default_pins_path() -> Path:
+    return state_dir() / PINS_NAME
 
 
 @dataclass
@@ -287,3 +292,63 @@ def load_selection(path: Path | None = None) -> list[str] | None:
         return None
     log.info("Loaded a selection of %d mod(s) from %s", len(mods), source)
     return [str(m) for m in mods]
+
+
+# --------------------------------------------------------------------------- #
+# Load order pins
+# --------------------------------------------------------------------------- #
+#
+# A pin is one ordering constraint the user stated by hand: "this mod loads
+# before that one". It exists because most ordering in Project Zomboid is not
+# declared anywhere a machine can read it. require= says a mod must be present,
+# not that it must come first, and the rest is prose on a Workshop page.
+#
+# Stored as pairs of mod ids rather than anything richer, so the file stays
+# readable and a mod that disappears from the disk just stops applying.
+
+
+def save_pins(pins: list[tuple[str, str]], path: Path | None = None) -> Path | None:
+    """Write the ordering constraints. Returns the path, or None on failure."""
+    target = Path(path) if path else default_pins_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "version": STORE_VERSION,
+                    "saved_at": time.time(),
+                    "pins": [{"before": a, "after": b} for a, b in pins],
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("Could not save the load order pins: %s", exc)
+        return None
+    log.info("Saved %d load order pin(s) to %s", len(pins), target)
+    return target
+
+
+def load_pins(path: Path | None = None) -> list[tuple[str, str]]:
+    """Read the ordering constraints back. Never raises; returns [] on trouble."""
+    source = Path(path) if path else default_pins_path()
+    if not source.is_file():
+        return []
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.warning("Ignoring unreadable pin file %s: %s", source, exc)
+        return []
+    pins: list[tuple[str, str]] = []
+    for entry in payload.get("pins", []):
+        if not isinstance(entry, dict):
+            continue
+        before = str(entry.get("before", "")).strip()
+        after = str(entry.get("after", "")).strip()
+        # A pin to itself is meaningless and would look like a cycle.
+        if not before or not after or before.lower() == after.lower():
+            continue
+        if (before, after) not in pins:
+            pins.append((before, after))
+    log.info("Loaded %d load order pin(s) from %s", len(pins), source)
+    return pins

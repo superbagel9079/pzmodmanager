@@ -38,6 +38,7 @@ from .selection import (
     export_text,
     index_by_key,
     order_notes,
+    pin_edges,
     summarise,
     unsubscribe_plan,
     topological_order,
@@ -157,6 +158,127 @@ class ExportScreen(ModalScreen):
         self.dismiss()
 
 
+class PinsScreen(ModalScreen):
+    """The ordering constraints stated by hand, and a way to drop them.
+
+    Removing one is the only destructive thing here, and it destroys nothing but
+    a line the user typed. It is applied when the screen closes, so ESC leaves
+    everything exactly as it was.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("q,Q", "cancel", "Cancel"),
+        # ENTER is not a binding here. A DataTable with a row cursor takes it
+        # first and turns it into RowSelected, so a binding for it never fires;
+        # the handler below is what actually runs. Declaring both would risk
+        # toggling twice the day Textual stops swallowing it.
+        Binding("d,D", "drop", "Remove"),
+        Binding("s,S", "save", "Save and close"),
+    ]
+
+    CSS = _RETRO + """
+    PinsScreen {
+        align: center middle;
+        background: #000000;
+    }
+    #pins-box {
+        width: 96;
+        height: auto;
+        max-height: 80%;
+        border: solid #b4b4b4;
+        background: #000000;
+        color: #b4b4b4;
+        padding: 1 2;
+    }
+    #pins-table {
+        height: auto;
+        max-height: 24;
+        background: #000000;
+        color: #b4b4b4;
+    }
+    """
+
+    def __init__(self, pins: list[tuple[str, str]], by_key: dict[str, ModRef]) -> None:
+        super().__init__()
+        self.pins = list(pins)
+        self.by_key = by_key
+        self.dropped: set[int] = set()
+
+    def compose(self) -> ComposeResult:
+        with Container(id="pins-box"):
+            yield Plain(
+                "LOAD ORDER PINS\n\n"
+                "Ordering you stated by hand, treated exactly like a declared\n"
+                "requirement when the order is worked out.\n\n"
+                "ENTER or 'd' marks a pin for removal or puts it back, 's'\n"
+                "saves and closes, ESC closes and changes nothing.",
+                id="pins-help",
+            )
+            yield DataTable(id="pins-table", cursor_type="row", zebra_stripes=False)
+            yield Plain("", id="pins-footer")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#pins-table", DataTable)
+        table.add_column("", width=3)
+        table.add_column("LOADS FIRST", width=34)
+        table.add_column("THEN", width=34)
+        table.add_column("STATUS")
+        self.redraw()
+        table.focus()
+
+    def status_of(self, before: str, after: str) -> str:
+        """Whether a pin can do anything, which is not the same as being saved."""
+        missing = [
+            mod_id
+            for mod_id in (before, after)
+            if mod_id.strip().lower() not in self.by_key
+        ]
+        if missing:
+            return f"not installed: {', '.join(missing)}"
+        return ""
+
+    def redraw(self) -> None:
+        table = self.query_one("#pins-table", DataTable)
+        row = table.cursor_row
+        table.clear()
+        for index, (before, after) in enumerate(self.pins):
+            mark = "[-]" if index in self.dropped else "   "
+            table.add_row(
+                cell(mark), cell(before), cell(after),
+                cell(self.status_of(before, after)),
+            )
+        if self.pins:
+            table.move_cursor(row=min(row, len(self.pins) - 1))
+        kept = len(self.pins) - len(self.dropped)
+        self.query_one("#pins-footer", Static).update(
+            Text(
+                f"{len(self.pins)} pin(s), {len(self.dropped)} marked for removal, "
+                f"{kept} would remain"
+                if self.dropped
+                else f"{len(self.pins)} pin(s)"
+            )
+        )
+
+    def on_data_table_row_selected(self, event) -> None:
+        """ENTER on a row. See the note next to the bindings."""
+        self.action_drop()
+
+    def action_drop(self) -> None:
+        table = self.query_one("#pins-table", DataTable)
+        index = table.cursor_row
+        if not (0 <= index < len(self.pins)):
+            return
+        self.dropped.symmetric_difference_update({index})
+        self.redraw()
+
+    def action_save(self) -> None:
+        self.dismiss([p for i, p in enumerate(self.pins) if i not in self.dropped])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ManageScreen(Screen):
     """Pick the mods to run, with dependencies handled and conflicts flagged."""
 
@@ -170,6 +292,8 @@ class ManageScreen(Screen):
         Binding("n,N", "select_none", "None"),
         Binding("r,R", "restore_scanned", "Scanned list"),
         Binding("o,O", "toggle_order_view", "Order view"),
+        Binding("b,B", "pin", "Pin before"),
+        Binding("v,V", "view_pins", "Pins"),
         Binding("d,D", "add_dependencies", "Deps"),
         Binding("w,W", "open_workshop", "Workshop"),
         Binding("p,P", "open_problem_link", "Problem link"),
@@ -187,9 +311,17 @@ class ManageScreen(Screen):
         selection_path: Path | None = None,
         steam_sdk: Path | None = None,
         scan=None,
+        pins_path: Path | None = None,
     ) -> None:
         super().__init__()
         self.selection_path = selection_path
+        self.pins_path = pins_path or store.default_pins_path()
+        # Ordering the user stated by hand, as (loads first, loads second) mod
+        # ids. Kept as ids rather than keys so the file reads the way the mods
+        # are actually named.
+        self.pins: list[tuple[str, str]] = store.load_pins(self.pins_path)
+        # The first half of a pin being built, while waiting for the second.
+        self.pin_anchor: str | None = None
         self.steam_sdk = steam_sdk
         # Where the enabled flags came from, and when. Without a mod list the
         # scan leaves every mod marked enabled, which would make 'r' silently
@@ -224,6 +356,8 @@ class ManageScreen(Screen):
             "'x' or SPACE toggles, '/' searches, 'a' all, 'n' none, "
             "'r' restores the list found at the scan\n"
             "'o' shows the load order that will be exported, numbered\n"
+            "'b' on a mod, then 'b' on another, pins the first to load before it; "
+            "'v' lists your pins\n"
             "'d' adds dependencies, 'w' opens this mod on the Workshop, 'p' opens the "
             "first problem link\n"
             "'e' exports, 'u' unsubscribes the deselected mods from Steam\n"
@@ -264,7 +398,9 @@ class ManageScreen(Screen):
         return needle in ref.mod_id.lower() or needle in (ref.name or "").lower()
 
     def refresh_all(self) -> None:
-        self.problems = validate(self.by_key, self.selected, self.findings)
+        self.problems = validate(
+            self.by_key, self.selected, self.findings, pins=self.pins
+        )
         self.refresh_table()
         self.refresh_side()
 
@@ -328,6 +464,7 @@ class ManageScreen(Screen):
         return topological_order(
             self.by_key,
             self.selected,
+            pins=self.pins,
             preferred=[
                 r.mod_id
                 for r in sorted(
@@ -449,6 +586,18 @@ class ManageScreen(Screen):
         _ordered, cycle = self.resolved_order()
         add(f"  order      {'has a cycle' if cycle else 'resolved'}")
         add(f"  view       {'load order' if self.order_view else 'alphabetical'}")
+        if self.pins:
+            # Two counts, because they answer different questions: how many you
+            # have written down, and how many are actually shaping this order. A
+            # pin whose mods are not both selected does nothing, silently.
+            active = len(pin_edges(self.by_key, self.selected, self.pins))
+            suffix = "" if active == len(self.pins) else f" ({active} in effect)"
+            add(f"  pins       {len(self.pins)}{suffix}, press 'v'")
+        if self.pin_anchor:
+            add("")
+            add(f"  PINNING    {self.pin_anchor} loads first")
+            add("             highlight the mod it comes before, press 'b'")
+            add("             'v' cancels")
 
         current = self.current_ref()
         self.refresh_poster(current)
@@ -576,6 +725,75 @@ class ManageScreen(Screen):
     def action_select_none(self) -> None:
         self.selected = set()
         self.notice = "cleared the selection"
+        self.refresh_all()
+
+    def action_pin(self) -> None:
+        """Say by hand that one mod loads before another. Two presses of 'b'.
+
+        The first press holds the mod that must come first, the second names the
+        one that follows. Two presses rather than a dialog because the mods have
+        to be found in the list anyway, and the list already has a search box.
+
+        A pin that would close a loop is refused outright, with both mods named.
+        Accepting it would produce an order no sorting can satisfy, and the only
+        symptom would be a cycle warning somewhere else entirely.
+        """
+        ref = self.current_ref()
+        if ref is None:
+            return
+        if self.pin_anchor is None:
+            self.pin_anchor = ref.mod_id
+            self.notice = (
+                f"{ref.mod_id} will load first: highlight the mod it must come "
+                "before and press 'b' again ('v' to cancel)"
+            )
+            self.refresh_side()
+            return
+
+        first, second = self.pin_anchor, ref.mod_id
+        self.pin_anchor = None
+        if first.strip().lower() == second.strip().lower():
+            self.notice = "a mod cannot load before itself; nothing was pinned"
+            self.refresh_all()
+            return
+        if (first, second) in self.pins:
+            self.notice = f"already pinned: {first} loads before {second}"
+            self.refresh_all()
+            return
+
+        candidate = self.pins + [(first, second)]
+        _ordered, cycle = topological_order(
+            self.by_key, self.selected, pins=candidate
+        )
+        if cycle:
+            self.notice = (
+                f"refused: {first} before {second} would close a loop with "
+                f"{', '.join(cycle[:4])}"
+            )
+            self.refresh_all()
+            return
+
+        self.pins = candidate
+        store.save_pins(self.pins, self.pins_path)
+        self.notice = f"pinned: {first} loads before {second}"
+        self.refresh_all()
+
+    def action_view_pins(self) -> None:
+        """List the pins, and cancel a half finished one on the way in."""
+        if self.pin_anchor is not None:
+            self.pin_anchor = None
+            self.notice = "pin cancelled"
+            self.refresh_all()
+            return
+        self.app.push_screen(PinsScreen(self.pins, self.by_key), self._after_pins)
+
+    def _after_pins(self, kept: list[tuple[str, str]] | None) -> None:
+        if kept is None or kept == self.pins:
+            return
+        removed = len(self.pins) - len(kept)
+        self.pins = kept
+        store.save_pins(self.pins, self.pins_path)
+        self.notice = f"removed {removed} pin(s)"
         self.refresh_all()
 
     def action_toggle_order_view(self) -> None:

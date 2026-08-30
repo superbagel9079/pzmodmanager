@@ -377,6 +377,11 @@ class SettingsScreen(Screen):
             if removed:
                 done.append(f"{removed} preview image(s)")
         if name == "reset_all":
+            # Only here. Pins are ordering the user typed out by hand, so
+            # clearing the last scan or the selection must leave them alone;
+            # "reset everything" is the one place that means everything.
+            if remove(store.default_pins_path()):
+                done.append("load order pins")
             self.settings = Settings()
             self.settings.save(self.settings_path)
             self.app.settings = self.settings

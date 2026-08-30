@@ -859,6 +859,165 @@ def test_order_view() -> None:
           "order view: pressing it again goes back to alphabetical")
 
 
+def test_order_pins(tmp: Path) -> None:
+    """Ordering the user states by hand, because most of it is stated nowhere.
+
+    require= says a mod must be PRESENT, not that it must come first, and the
+    rest lives in prose on a Workshop page that no tool can safely act on. A pin
+    is the user writing that ordering down once, in a form the sort can use.
+
+    Three things have to hold. It must change the exported order, since a
+    constraint that does not reach the file is decoration. It must survive a
+    restart. And it must refuse a pin that closes a loop at the moment it is
+    made, because accepting one produces an order nothing can satisfy and the
+    only symptom appears somewhere else entirely.
+    """
+    import asyncio
+
+    from pzmodmanager.manager_screen import ManageScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    pins_file = tmp / "pins" / "load-order-pins.json"
+    # Alphabetical order is Alpha, Beta, Zeta, and nothing requires anything, so
+    # any change to the sequence can only come from a pin.
+    mods = [sel.ModRef(mod_id=n, name=n) for n in ("Alpha", "Beta", "Zeta")]
+
+    check(store.load_pins(pins_file) == [],
+          "pins: no file means no pins, not a crash")
+
+    async def run(first_visit: bool) -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 34)) as pilot:
+            screen = ManageScreen(mods, [], pins_path=pins_file)
+            await app.push_screen(screen)
+            await pilot.pause()
+            screen.selected = {"alpha", "beta", "zeta"}
+            screen.refresh_all()
+            await pilot.pause()
+            seen["loaded"] = list(screen.pins)
+            seen["before"] = screen.resolved_order()[0]
+
+            if first_visit:
+                table = screen.query_one("#mods")
+                # Zeta is the last row; pin it to load before Alpha, the first.
+                table.move_cursor(row=2)
+                await pilot.pause()
+                await pilot.press("b")
+                await pilot.pause()
+                seen["half"] = screen.pin_anchor
+                table.move_cursor(row=0)
+                await pilot.pause()
+                await pilot.press("b")
+                for _ in range(3):
+                    await pilot.pause()
+                seen["pins"] = list(screen.pins)
+                seen["after"] = screen.resolved_order()[0]
+                seen["notice"] = screen.notice
+
+                # Now the opposite pin, which would close the loop.
+                await pilot.press("b")           # holds Alpha
+                table.move_cursor(row=2)
+                await pilot.pause()
+                await pilot.press("b")           # Alpha before Zeta
+                for _ in range(3):
+                    await pilot.pause()
+                seen["after_loop"] = list(screen.pins)
+                seen["loop_notice"] = screen.notice
+        return seen
+
+    made = asyncio.run(run(True))
+    again = asyncio.run(run(False))
+
+    check(made["loaded"] == [], "pins: the first visit starts with none")
+    check(made["before"] == ["Alpha", "Beta", "Zeta"],
+          f"pins: unpinned, the order is the plain one (got {made['before']})")
+    check(made["half"] == "Zeta",
+          f"pins: the first press holds the mod, it does not act (got {made['half']})")
+    check(made["pins"] == [("Zeta", "Alpha")],
+          f"pins: the second press records the pair (got {made['pins']})")
+    # The property, not a full sequence. Beta is under no constraint at all, so
+    # where it lands is the tie break's business and asserting it would be
+    # testing an accident. What a pin promises is exactly one thing.
+    check(made["after"].index("Zeta") < made["after"].index("Alpha"),
+          f"pins: and the order really changes (got {made['after']})")
+    check(made["before"].index("Zeta") > made["before"].index("Alpha"),
+          "pins: which is the opposite of where they sat without it")
+    check(made["after_loop"] == [("Zeta", "Alpha")],
+          f"pins: a pin that closes a loop is refused (got {made['after_loop']})")
+    check("refused" in made["loop_notice"] and "loop" in made["loop_notice"],
+          f"pins: and says so rather than failing quietly ({made['loop_notice']})")
+
+    check(pins_file.is_file(), "pins: they are written to disk straight away")
+    check(again["loaded"] == [("Zeta", "Alpha")],
+          f"pins: and are still there next time (got {again['loaded']})")
+    check(again["before"].index("Zeta") < again["before"].index("Alpha"),
+          f"pins: shaping the order from the moment the screen opens "
+          f"(got {again['before']})")
+
+    # A pin naming something that is not here does nothing, and does not throw.
+    by_key = sel.index_by_key(mods)
+    keys = set(by_key)
+    check(sel.pin_edges(by_key, keys, [("Ghost", "Alpha")]) == [],
+          "pins: one naming an uninstalled mod is ignored, not an error")
+    check(sel.pin_edges(by_key, {"alpha"}, [("Zeta", "Alpha")]) == [],
+          "pins: one whose mods are not both selected does nothing")
+    check(sel.pin_edges(by_key, keys, [("Alpha", "Alpha")]) == [],
+          "pins: a mod cannot be pinned before itself")
+
+    # The screen that lists them, driven for real. ENTER is the interesting part:
+    # a DataTable with a row cursor swallows it and turns it into RowSelected, so
+    # a Binding("enter", ...) never fires. That was a silent dead key.
+    from pzmodmanager.manager_screen import PinsScreen
+
+    async def review() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 40)) as pilot:
+            listed = [("Zeta", "Alpha"), ("Beta", "[b]Ghost[/b]")]
+            screen = PinsScreen(listed, sel.index_by_key(mods))
+            app.push_screen(screen, lambda value: seen.update(kept=value))
+            await pilot.pause()
+            await pilot.pause()
+            table = screen.query_one("#pins-table")
+            seen["rows"] = table.row_count
+            seen["hostile"] = table.get_cell_at(Coordinate(1, 2)).plain
+            seen["status"] = table.get_cell_at(Coordinate(1, 3)).plain
+            await pilot.press("enter")
+            await pilot.pause()
+            seen["marked"] = set(screen.dropped)
+            await pilot.press("enter")
+            await pilot.pause()
+            seen["unmarked"] = set(screen.dropped)
+            await pilot.press("enter")
+            await pilot.press("s")
+            for _ in range(3):
+                await pilot.pause()
+        return seen
+
+    from textual.coordinate import Coordinate
+
+    shown = asyncio.run(review())
+    check(shown["rows"] == 2, "pins: the review screen lists them all")
+    check(shown["hostile"] == "[b]Ghost[/b]",
+          f"pins: a mod id full of brackets is printed, not parsed "
+          f"(got {shown['hostile']!r})")
+    check("not installed" in shown["status"],
+          f"pins: a pin pointing at nothing says so ({shown['status']})")
+    check(shown["marked"] == {0}, "pins: ENTER marks a pin for removal")
+    check(shown["unmarked"] == set(), "pins: and pressing it again puts it back")
+    check(shown["kept"] == [("Beta", "[b]Ghost[/b]")],
+          f"pins: saving keeps exactly what was not marked (got {shown['kept']})")
+
+    # And a loop that does get in anyway must be reported, not hidden.
+    problems = sel.validate(by_key, keys, [], pins=[("Alpha", "Beta"), ("Beta", "Alpha")])
+    cycles = [p for p in problems if p.kind == "dependency_cycle"]
+    check(len(cycles) == 1, "pins: a loop made of pins is reported as a problem")
+    check("pins" in cycles[0].fix_hint,
+          f"pins: and the advice names the pins ({cycles[0].fix_hint})")
+
+
 def test_restore_scanned() -> None:
     """'r' puts back what the scan recorded, and says where that came from.
 
@@ -1830,6 +1989,7 @@ def main() -> int:
         test_toggle_keeps_the_view_still()
         test_order_hints()
         test_order_view()
+        test_order_pins(tmp)
         test_restore_scanned()
         test_one_dependency_resolver()
         test_validate_knows_typos()

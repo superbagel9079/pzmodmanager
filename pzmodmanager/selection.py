@@ -221,16 +221,43 @@ def dependents_of(by_key: dict[str, ModRef], key: str, within: set[str]) -> list
 # --------------------------------------------------------------------------- #
 
 
+def pin_edges(
+    by_key: dict[str, ModRef],
+    keys: set[str],
+    pins: list[tuple[str, str]] | None,
+) -> list[tuple[str, str]]:
+    """The pins that actually apply here, as (before key, after key) pairs.
+
+    A pin naming a mod that is not installed, or not selected, is silently left
+    out rather than treated as an error. Mods come and go; the file should not
+    have to be curated every time one does.
+    """
+    applies: list[tuple[str, str]] = []
+    for before, after in pins or []:
+        first, second = before.strip().lower(), after.strip().lower()
+        if first == second:
+            continue
+        if first in keys and second in keys and first in by_key and second in by_key:
+            if (first, second) not in applies:
+                applies.append((first, second))
+    return applies
+
+
 def topological_order(
     by_key: dict[str, ModRef],
     keys: set[str],
     preferred: list[str] | None = None,
+    pins: list[tuple[str, str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Order the selection so every mod comes after what it requires.
 
     `preferred` is an existing order used to break ties, so an order that already
-    works is disturbed as little as possible. Returns (ordered mod ids, ids
-    involved in a dependency cycle).
+    works is disturbed as little as possible. `pins` are ordering constraints the
+    user stated by hand, as (loads first, loads second) pairs; they are treated
+    exactly like a declared requirement for the purpose of sorting, because that
+    is what they are, just written down by the user instead of the author.
+
+    Returns (ordered mod ids, ids involved in a cycle).
     """
     rank: dict[str, int] = {}
     for position, mod_id in enumerate(preferred or []):
@@ -249,6 +276,8 @@ def topological_order(
             rkey = required.strip().lower()
             if rkey in keys:
                 waiting_on[key].add(rkey)
+    for first, second in pin_edges(by_key, keys, pins):
+        waiting_on[second].add(first)
 
     ordered: list[str] = []
     remaining = dict(waiting_on)
@@ -364,6 +393,7 @@ def validate(
     by_key: dict[str, ModRef],
     keys: set[str],
     findings: list[Finding] | None = None,
+    pins: list[tuple[str, str]] | None = None,
 ) -> list[Problem]:
     """Everything wrong with this selection, worst first.
 
@@ -463,15 +493,25 @@ def validate(
                     )
                 )
 
-    _, cycle = topological_order(by_key, keys)
+    # With the pins, because a hand written constraint can close a loop just as
+    # a require= line can, and a cycle the panel cannot see is a cycle the user
+    # only finds out about from the exported file.
+    _, cycle = topological_order(by_key, keys, pins=pins)
     if cycle:
+        pinned = {m for pair in pin_edges(by_key, keys, pins) for m in pair}
+        involved = any(m.strip().lower() in pinned for m in cycle)
         problems.append(
             Problem(
                 kind="dependency_cycle",
                 severity=Severity.CRITICAL,
-                message="These mods require each other in a loop: " + ", ".join(cycle),
+                message="These mods have to come before each other: " + ", ".join(cycle),
                 mods=cycle,
-                fix_hint="No order can satisfy them all. Drop one to break the loop.",
+                fix_hint=(
+                    "No order can satisfy them all. Drop one of your pins to break "
+                    "the loop."
+                    if involved
+                    else "No order can satisfy them all. Drop one to break the loop."
+                ),
             )
         )
 

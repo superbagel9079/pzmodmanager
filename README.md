@@ -327,6 +327,8 @@ what would break if you dropped it, and its Workshop link:
 | a / n | select everything, or nothing |
 | r | restore the list the scan found enabled |
 | o | show the load order that will be exported, numbered |
+| b | pin this mod to load before another one |
+| v | list your pins, and remove any |
 | d | pull in every missing dependency |
 | w | open this mod's Workshop page in Steam |
 | e | export the selection |
@@ -425,7 +427,42 @@ dependency: it may name a mod you do not have, it may be telling you what not to
 do, and acting on it would mean moving a mod because a regular expression matched.
 The tool quotes it and links the page. The placing is yours.
 
-#### E. The export
+#### E. Pinning an order by hand
+
+`require=` says a mod must be **present**, not that it must come **first**, and
+almost everything else about ordering is prose on a Workshop page that no tool
+can safely act on. A pin is you writing that ordering down once, in a form the
+sort can use.
+
+Highlight the mod that has to load first and press `b`. The panel holds it:
+
+```
+  PINNING    ElyonLib loads first
+             highlight the mod it comes before, press 'b'
+             'v' cancels
+```
+
+Highlight the other mod, press `b` again, and the pin is saved. From then on it
+is treated exactly like a declared requirement when the order is worked out,
+because that is what it is, written down by you instead of by the author.
+
+`v` lists them and lets you take any back out. ESC there changes nothing; `s`
+saves.
+
+Three things worth knowing:
+
+1. **A pin that would close a loop is refused at the moment you make it**, and
+   both mods are named. Accepting it would produce an order nothing can satisfy,
+   and the only symptom would be a cycle warning somewhere else entirely.
+2. **A pin naming a mod you do not have, or have not selected, does nothing** and
+   is not an error. Mods come and go; the file should not need curating every
+   time one does. The panel shows two counts when they differ: how many pins you
+   have, and how many are actually shaping this order.
+3. They live in `load-order-pins.json` next to your other data, and only
+   **Reset everything** in the settings clears them. Clearing the last scan or
+   the selection leaves them alone, since they are something you typed.
+
+#### F. The export
 
 The export produces a load order sorted so every mod comes after what it
 requires, using your existing order to break ties so a working list is disturbed
@@ -439,7 +476,7 @@ WorkshopItems=2392709985;3728775267;...
 They are written next to the report, along with a plain mod list and a file of
 Workshop links, and the selection is remembered for next time.
 
-#### F. Without the interface
+#### G. Without the interface
 
 The same thing works without the interface, which is handy for scripting a
 server:
@@ -456,7 +493,7 @@ dependency that an `--enable` pulled in. The resulting gap is reported rather
 than silently filled back, and exporting an unresolved selection prints a warning
 rather than refusing.
 
-#### G. On unsubscribing
+#### H. On unsubscribing
 
 There are two doors, and only one of them opens.
 
