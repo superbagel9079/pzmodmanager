@@ -40,3 +40,7 @@ steam_api64.dll
 steam_api.dll
 libsteam_api.so
 libsteam_api.dylib
+
+# Copies this tool takes of a save's mod list before rewriting it.
+# They live in the game's save folder, never here, but the rule costs nothing.
+mods.txt.pzmodmanager-backup-*

@@ -303,6 +303,7 @@ class ManageScreen(Screen):
         Binding("o,O", "toggle_order_view", "Order view"),
         Binding("b,B", "pin", "Pin before"),
         Binding("v,V", "view_pins", "Pins"),
+        Binding("g,G", "apply_to_save", "Apply to a save"),
         Binding("d,D", "add_dependencies", "Deps"),
         Binding("w,W", "open_workshop", "Workshop"),
         Binding("p,P", "open_problem_link", "Problem link"),
@@ -369,7 +370,8 @@ class ManageScreen(Screen):
             "'v' lists your pins\n"
             "'d' adds dependencies, 'w' opens this mod on the Workshop, 'p' opens the "
             "first problem link\n"
-            "'e' exports, 'u' unsubscribes the deselected mods from Steam\n"
+            "'e' exports, 'g' writes the order into a save, "
+            "'u' unsubscribes the deselected mods from Steam\n"
             "'h' hides the minor problems, ESC returns",
             id="hint",
         )
@@ -785,6 +787,33 @@ class ManageScreen(Screen):
         self.pins = candidate
         store.save_pins(self.pins, self.pins_path)
         self.notice = f"pinned: {first} loads before {second}"
+        self.refresh_all()
+
+    def action_apply_to_save(self) -> None:
+        """Write the computed order into a save. The only thing here that does.
+
+        The export writes files the game never reads. This is the step that
+        actually reaches it, so it goes through its own screen, with the plan
+        shown before anything happens and Cancel highlighted by default.
+        """
+        ordered, cycle = self.resolved_order()
+        if cycle:
+            self.notice = (
+                "no order to apply: these mods have to come before each other, "
+                f"{', '.join(cycle[:3])}"
+            )
+            self.refresh_all()
+            return
+        if not ordered:
+            self.notice = "nothing selected, so there is no order to apply"
+            self.refresh_all()
+            return
+        from .apply_screen import ApplyScreen
+
+        self.app.push_screen(ApplyScreen(ordered), self._after_apply)
+
+    def _after_apply(self, message: str | None) -> None:
+        self.notice = message or "nothing was written"
         self.refresh_all()
 
     def action_view_pins(self) -> None:

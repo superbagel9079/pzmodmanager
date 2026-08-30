@@ -999,6 +999,152 @@ def test_game_log(tmp: Path) -> None:
           "log: with no log it explains itself rather than showing an empty table")
 
 
+def test_apply_to_save(tmp: Path) -> None:
+    """Writing the load order into a save. The only write in the whole tool.
+
+    Build 42 keeps the order inside the save, in its own mods.txt, and that file
+    is what the game reads: on a real machine its sequence matched the order the
+    game logged, mod for mod. Exporting a text file next to the report never
+    reached the game at all, which is the gap this closes.
+
+    Two properties carry the safety, and both are checked below on a file shaped
+    exactly like a real one, brace for brace.
+
+      * it REORDERS and never adds or removes. The mod set of a save is part of
+        that save; changing it can break a world with items in the ground. A
+        different set is refused and the file is left byte for byte identical.
+      * it copies the file first, and restoring is one call, because the game
+        has no undo for this.
+    """
+    from pzmodmanager import savegame
+
+    original = (
+        "VERSION = 1,\n"
+        "\n"
+        "mods\n"
+        "{\n"
+        "    mod = ZombieBuddy,\n"
+        "    mod = AlicesMultiWear,\n"
+        "    mod = ETO_B,\n"
+        "}\n"
+        "\n"
+        "maps\n"
+        "{\n"
+        "}\n"
+    )
+    folder = tmp / "Saves" / "Apocalypse" / "2026-08-30_03-32-14"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / "mods.txt"
+    target.write_text(original, encoding="utf-8")
+
+    save = savegame.read_save(folder)
+    check(save is not None and save.mods == ["ZombieBuddy", "AlicesMultiWear", "ETO_B"],
+          f"save: the order is read out of the save (got {save.mods if save else None})")
+    check(save.label == "Apocalypse/2026-08-30_03-32-14",
+          "save: named the way the player would recognise it")
+    check(savegame.read_save(tmp / "nowhere") is None,
+          "save: a folder with no mods.txt is not a save, and does not raise")
+
+    # A different set of mods must be refused, and change nothing.
+    for wrong in (["ZombieBuddy", "AlicesMultiWear", "Ghost"],
+                  ["ZombieBuddy", "AlicesMultiWear"]):
+        proposal = savegame.plan(save, wrong)
+        check(not proposal.safe, f"save: {wrong} is not the same set, so not safe")
+        check(proposal.refusal, "save: and the refusal says which mods differ")
+        done, message, backup = savegame.apply(save, wrong)
+        check(not done and message.startswith("refused"),
+              f"save: the write is refused (got {message})")
+        check(backup is None, "save: with no backup taken, because nothing was risked")
+        check(target.read_text(encoding="utf-8") == original,
+              "save: and the file is byte for byte what it was")
+
+    # A real reordering.
+    wanted = ["ETO_B", "ZombieBuddy", "AlicesMultiWear"]
+    proposal = savegame.plan(save, wanted)
+    check(proposal.safe, "save: the same mods in a new order is safe")
+    check(len(proposal.moves) == 3,
+          f"save: every mod that moves is listed (got {proposal.moves})")
+    done, message, backup = savegame.apply(save, wanted)
+    check(done, f"save: the write goes through (got {message})")
+    check(backup is not None and backup.is_file(),
+          "save: a copy of the old file is kept beside it")
+    check(backup.read_text(encoding="utf-8") == original,
+          "save: and the copy is the file exactly as it was")
+
+    after = savegame.read_save(folder)
+    check(after.mods == wanted, f"save: the new order is in the file (got {after.mods})")
+    check(sorted(after.mods) == sorted(save.mods),
+          "save: with the same mods, none gained, none lost")
+    text = target.read_text(encoding="utf-8")
+    check(text.startswith("VERSION = 1,") and text.rstrip().endswith("}"),
+          "save: the version line and the maps block survive untouched")
+    check(text.count("mod = ") == 3 and "    mod = " in text,
+          "save: the game's own indentation is kept, not reinvented")
+
+    # Applying the same order twice must be a no-op, not a second backup.
+    before_count = len(after.backups)
+    done, message, backup = savegame.apply(after, wanted)
+    check(done and "nothing to do" in message,
+          f"save: re-applying the same order does nothing (got {message})")
+    check(len(savegame.read_save(folder).backups) == before_count,
+          "save: and does not pile up another backup")
+
+    # The undo.
+    restored, message = savegame.restore(after, after.backups[0])
+    check(restored, f"save: a backup restores (got {message})")
+    check(target.read_text(encoding="utf-8") == original,
+          "save: back to exactly the original bytes")
+
+    # And the screen, with Cancel first because a stray ENTER must do nothing.
+    import asyncio
+
+    from pzmodmanager.apply_screen import ApplyScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 40)) as pilot:
+            screen = ApplyScreen(wanted)
+            screen.saves = [savegame.read_save(folder)]
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+            screen.saves = [savegame.read_save(folder)]
+            screen.redraw()
+            await pilot.pause()
+            seen["stage"] = screen.stage
+            await pilot.press("enter")          # choose the save
+            for _ in range(3):
+                await pilot.pause()
+            seen["after_pick"] = screen.stage
+            choices = screen.query_one("#apply-choices")
+            seen["first"] = choices.get_option_at_index(0).id
+            seen["ids"] = [choices.get_option_at_index(i).id
+                           for i in range(choices.option_count)]
+            seen["highlighted"] = choices.highlighted
+            seen["notes"] = screen.query_one("#apply-notes").render().plain
+            await pilot.press("enter")          # takes Cancel, so writes nothing
+            for _ in range(3):
+                await pilot.pause()
+            seen["file"] = target.read_text(encoding="utf-8")
+        return seen
+
+    shown = asyncio.run(run())
+    check(shown["after_pick"] == "confirm",
+          "save: choosing a save moves to the confirmation, it does not write")
+    check(shown["first"] == "cancel" and shown["highlighted"] == 0,
+          f"save: Cancel is first and highlighted (got {shown['ids']})")
+    check("write" in shown["ids"], "save: writing is offered, just not by default")
+    check("THIS WRITES INSIDE YOUR SAVE" in shown["notes"],
+          "save: the warning is on the screen, not only in the docs")
+    check("backup" in shown["notes"] or "copy" in shown["notes"],
+          "save: and it says a copy is taken first")
+    check(shown["file"] == original,
+          "save: pressing ENTER on the default wrote nothing at all")
+
+
 def test_order_pins(tmp: Path) -> None:
     """Ordering the user states by hand, because most of it is stated nowhere.
 
@@ -2246,6 +2392,7 @@ def main() -> int:
         test_order_hints()
         test_order_view()
         test_game_log(tmp)
+        test_apply_to_save(tmp)
         test_order_pins(tmp)
         test_restore_scanned()
         test_one_dependency_resolver()

@@ -360,6 +360,7 @@ what would break if you dropped it, and its Workshop link:
 | o | show the load order that will be exported, numbered |
 | b | pin this mod to load before another one |
 | v | list your pins, and remove any |
+| g | write the order into a save, after confirmation |
 | d | pull in every missing dependency |
 | w | open this mod's Workshop page in Steam |
 | e | export the selection |
@@ -536,7 +537,51 @@ comparing two things that have nothing to do with each other.
 
 Nothing here writes anything. It reads one text file.
 
-#### G. The export
+#### G. Applying the order to a save
+
+The export writes files. **The game never reads them.** For a server that is
+enough, because you paste the two ini lines yourself. For a single player game
+it is not: Build 42 keeps the load order inside the save.
+
+```
+Zomboid/Saves/<mode>/<save name>/mods.txt
+
+    VERSION = 1,
+
+    mods
+    {
+        mod = ZombieBuddy,
+        mod = AlicesMultiWearVanilla,
+    }
+```
+
+Verified on a real machine: the sequence in that file is exactly the sequence
+the game logs as it loads, mod for mod, 246 of them. So `g` in the manager
+offers to write it, and it is the only thing in this tool that changes a file
+belonging to the game.
+
+Three guard rails, none of them optional:
+
+1. **It reorders, it never adds or removes.** The set of mods in a save is part
+   of that save: dropping one can break a world with items in the ground, and
+   adding one mid-save is not a decision a tool should take for you. A write is
+   refused unless the order holds exactly the mods the save already has, and the
+   refusal names the difference. On a refusal the file is not opened for writing
+   at all.
+2. **A timestamped copy is taken first**, in the same folder, before a byte is
+   written. `r` on that screen puts it back. The game has no undo for this.
+3. **Cancel is the first and highlighted option** on the confirmation, which
+   also lists which mods would move and to where. A stray ENTER does nothing.
+
+Everything in the file that is not a mod line is carried through byte for byte,
+including the version line, the maps block and the game's own indentation.
+Rebuilding the file would mean guessing at a format that is not documented and
+has changed between builds.
+
+The full loop, once: work out the order, `g` to apply it, play, then **Game log**
+to see the order the game really used and who won which file.
+
+#### H. The export
 
 The export produces a load order sorted so every mod comes after what it
 requires, using your existing order to break ties so a working list is disturbed
@@ -550,7 +595,7 @@ WorkshopItems=2392709985;3728775267;...
 They are written next to the report, along with a plain mod list and a file of
 Workshop links, and the selection is remembered for next time.
 
-#### H. Without the interface
+#### I. Without the interface
 
 The same thing works without the interface, which is handy for scripting a
 server:
@@ -567,7 +612,7 @@ dependency that an `--enable` pulled in. The resulting gap is reported rather
 than silently filled back, and exporting an unresolved selection prints a warning
 rather than refusing.
 
-#### I. On unsubscribing
+#### J. On unsubscribing
 
 There are two doors, and only one of them opens.
 
