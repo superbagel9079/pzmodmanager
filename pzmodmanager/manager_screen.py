@@ -20,6 +20,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Input, Static
 
@@ -197,6 +198,10 @@ class ManageScreen(Screen):
         self.problems: list[Problem] = []
         self.problem_view = 0
         self.notice = ""
+        # What is actually drawn in the table right now, one tuple per row. Kept
+        # so a refresh can rewrite only the cells whose text changed instead of
+        # emptying the table and filling it again.
+        self.drawn_rows: list[tuple[str, str, str]] = []
 
     # ------------------------------------------------------------------ view --
 
@@ -257,45 +262,67 @@ class ManageScreen(Screen):
             table.add_column("ON", width=3)
             table.add_column("MOD", width=40)
             table.add_column("ID")
-        previous = table.cursor_row
-        # Where the list was scrolled to, not just which row was highlighted.
-        # clear() sends the scroll back to the top, and move_cursor afterwards
-        # only scrolls far enough to bring the row into view, which parks it on
-        # the bottom edge. Ticking a box then threw the whole list around.
-        before = table.scroll_offset
-        rows_before = len(self.visible_refs)
-        table.clear()
-        self.visible_refs = [r for r in self.refs if self._matches(r)]
+        wanted = [r for r in self.refs if self._matches(r)]
         # The same problems the panel is showing, so the marker and the panel
         # never disagree. With every mod flagged by a low typo, a list of two
         # hundred exclamation marks says nothing at all, and hiding the problems
         # while keeping their markers would be the worst of both.
         flagged = {m.strip().lower() for p in self.shown_problems() for m in p.mods}
-        for index, ref in enumerate(self.visible_refs):
-            mark = CHECKED if ref.key in self.selected else UNCHECKED
-            name = ref.name or ref.mod_id
-            if ref.key in flagged and ref.key in self.selected:
-                name = f"! {name}"
-            table.add_row(cell(mark), cell(name), cell(ref.mod_id), key=str(index))
-        if self.visible_refs:
-            table.move_cursor(row=min(previous, len(self.visible_refs) - 1))
-            # Put the view back exactly where it was, but only when the list is
-            # the same length. Ticking a box cannot change the number of rows,
-            # so the old offset is still right. Searching does change it, and
-            # there the cursor should be brought into view normally.
-            #
-            # It has to be scheduled, not called. move_cursor does not scroll
-            # immediately after a rebuild: it queues _scroll_cursor_into_view
-            # with call_after_refresh, so anything done here and now is undone a
-            # moment later. Queueing behind it is what actually holds.
-            if rows_before == len(self.visible_refs):
-                table.call_after_refresh(
-                    table.scroll_to, x=before.x, y=before.y, animate=False, force=True
-                )
+        rows = [self._row_for(ref, flagged) for ref in wanted]
+        # Ticking a box changes at most a handful of cells: the box itself, the
+        # boxes of any dependency it pulled in, and the exclamation marks the new
+        # problem list moved. The rows themselves are the same rows, in the same
+        # order. Rewriting only what changed is the difference between one small
+        # repaint and two full ones, which is what the flicker was.
+        same_rows = [r.key for r in wanted] == [r.key for r in self.visible_refs]
+        self.visible_refs = wanted
+        if same_rows and table.row_count == len(rows):
+            self._patch_rows(table, rows)
+        else:
+            self._rebuild_rows(table, rows)
+        self.drawn_rows = rows
         self.query_one("#footer", Static).update(
             summarise(self.by_key, self.selected, self.problems)
             + (f"   {self.notice}" if self.notice else "")
         )
+
+    def _row_for(self, ref: ModRef, flagged: set[str]) -> tuple[str, str, str]:
+        """The three cells a mod occupies, as plain strings so they compare."""
+        mark = CHECKED if ref.key in self.selected else UNCHECKED
+        name = ref.name or ref.mod_id
+        if ref.key in flagged and ref.key in self.selected:
+            name = f"! {name}"
+        return (mark, name, ref.mod_id)
+
+    def _patch_rows(self, table: DataTable, rows: list[tuple[str, str, str]]) -> None:
+        """Rewrite only the cells that differ, leaving cursor and scroll alone.
+
+        Nothing here empties the table, so there is no scroll reset to undo and
+        no cursor to put back. That is the whole point: the old code had to
+        restore both, and the restoring was itself a second visible repaint.
+        """
+        for index, row in enumerate(rows):
+            was = self.drawn_rows[index] if index < len(self.drawn_rows) else None
+            for column, value in enumerate(row):
+                if was is not None and was[column] == value:
+                    continue
+                table.update_cell_at(
+                    Coordinate(index, column), cell(value), update_width=False
+                )
+
+    def _rebuild_rows(self, table: DataTable, rows: list[tuple[str, str, str]]) -> None:
+        """Draw the table from scratch, for when the set of rows really changed.
+
+        Searching is the case that lands here. The cursor is kept in range and
+        scrolled into view normally, because the row it used to sit on may not
+        exist any more.
+        """
+        previous = table.cursor_row
+        table.clear()
+        for index, row in enumerate(rows):
+            table.add_row(*(cell(value) for value in row), key=str(index))
+        if rows:
+            table.move_cursor(row=min(previous, len(rows) - 1))
 
     def refresh_poster(self, current) -> None:
         """Draw the highlighted mod's poster, if there is one to draw."""

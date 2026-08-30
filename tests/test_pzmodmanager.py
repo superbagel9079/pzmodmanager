@@ -647,12 +647,36 @@ def test_toggle_keeps_the_view_still() -> None:
             seen["row_before"] = table.cursor_row
             seen["scroll_before"] = round(table.scroll_y)
 
+            # Count what the toggle actually does to the table. Holding the
+            # scroll still was only half the problem: rebuilding 120 rows to
+            # change one checkbox repaints the whole list twice per keypress,
+            # which reads as a flicker even when nothing ends up moving.
+            counts = {"clear": 0, "add": 0, "update": 0}
+            real_clear, real_add = table.clear, table.add_row
+            real_update = table.update_cell_at
+
+            def counted(name, inner):
+                def wrapper(*args, **kwargs):
+                    counts[name] += 1
+                    return inner(*args, **kwargs)
+                return wrapper
+
+            table.clear = counted("clear", real_clear)
+            table.add_row = counted("add", real_add)
+            table.update_cell_at = counted("update", real_update)
+
             await pilot.press("x")
             for _ in range(4):
                 await pilot.pause()
             seen["row_after"] = table.cursor_row
             seen["scroll_after"] = round(table.scroll_y)
             seen["ticked"] = bool(screen.selected)
+            seen["cleared"] = counts["clear"]
+            seen["added"] = counts["add"]
+            seen["updated"] = counts["update"]
+
+            table.clear, table.add_row = real_clear, real_add
+            table.update_cell_at = real_update
 
             await pilot.press("space")
             for _ in range(4):
@@ -676,6 +700,15 @@ def test_toggle_keeps_the_view_still() -> None:
           f"still: and the list does not move ({seen['scroll_before']} -> "
           f"{seen['scroll_after']})")
     check(seen["ticked"], "still: the toggle did happen, this is not a no-op test")
+    check(seen["cleared"] == 0 and seen["added"] == 0,
+          f"still: toggling does not rebuild the table "
+          f"(cleared {seen['cleared']}, added {seen['added']} of 120 rows)")
+    # One cell: the checkbox. No mod here has a problem, so no exclamation mark
+    # moves. The upper bound is what matters, not the exact figure: the old code
+    # rewrote all 120 rows to change this one character.
+    check(0 < seen["updated"] <= 4,
+          f"still: it rewrites only the cells that changed "
+          f"(got {seen['updated']})")
     check(seen["scroll_after_two"] == seen["scroll_before"],
           "still: unticking does not move it either")
     check(seen["rows_filtered"] > 0 and seen["cursor_visible"],
