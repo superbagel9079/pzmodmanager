@@ -336,6 +336,7 @@ class MenuScreen(Screen):
                     export_dir=self.app.report_path.parent,
                     selection_path=self.app.selection_path,
                     steam_sdk=self.app.steam_sdk,
+                    scan=self.app.stored,
                 )
             )
         elif choice == "browse":
@@ -462,6 +463,7 @@ class ScanScreen(Screen):
                     export_dir=self.app.report_path.parent,
                     selection_path=self.app.selection_path,
                     steam_sdk=self.app.steam_sdk,
+                    scan=scan,
                 )
             )
         else:
@@ -679,6 +681,7 @@ class ResultsScreen(Screen):
                 export_dir=self.app.report_path.parent,
                 selection_path=self.app.selection_path,
                 steam_sdk=self.app.steam_sdk,
+                scan=self.scan,
             )
         )
 
@@ -784,6 +787,7 @@ class ModCheckApp(App):
                     export_dir=self.report_path.parent,
                     selection_path=self.selection_path,
                     steam_sdk=self.steam_sdk,
+                    scan=self.stored,
                 )
             )
 

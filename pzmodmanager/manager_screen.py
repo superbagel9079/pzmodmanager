@@ -163,7 +163,8 @@ class ManageScreen(Screen):
         Binding("x,X", "toggle", "Toggle"),
         Binding("a,A", "select_all", "All"),
         Binding("n,N", "select_none", "None"),
-        Binding("o,O", "select_from_order", "From order"),
+        Binding("r,R", "restore_scanned", "Scanned list"),
+        Binding("o,O", "toggle_order_view", "Order view"),
         Binding("d,D", "add_dependencies", "Deps"),
         Binding("w,W", "open_workshop", "Workshop"),
         Binding("p,P", "open_problem_link", "Problem link"),
@@ -180,10 +181,17 @@ class ManageScreen(Screen):
         export_dir: Path | None = None,
         selection_path: Path | None = None,
         steam_sdk: Path | None = None,
+        scan=None,
     ) -> None:
         super().__init__()
         self.selection_path = selection_path
         self.steam_sdk = steam_sdk
+        # Where the enabled flags came from, and when. Without a mod list the
+        # scan leaves every mod marked enabled, which would make 'r' silently
+        # tick all 253 boxes and look like a bug rather than an empty source.
+        self.has_order = bool(getattr(scan, "has_order", False))
+        self.order_source = str(getattr(scan, "order_source", "") or "")
+        self.scan_label = str(getattr(scan, "saved_label", "") or "")
         # One row per mod id. Two folders sharing an id are one selectable mod,
         # and the duplicate itself is already reported as a finding.
         self.by_key = index_by_key(list(refs))
@@ -197,6 +205,7 @@ class ManageScreen(Screen):
         self.visible_refs: list[ModRef] = []
         self.problems: list[Problem] = []
         self.problem_view = 0
+        self.order_view = False
         self.notice = ""
         # What is actually drawn in the table right now, one tuple per row. Kept
         # so a refresh can rewrite only the cells whose text changed instead of
@@ -208,7 +217,8 @@ class ManageScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Plain(
             "'x' or SPACE toggles, '/' searches, 'a' all, 'n' none, "
-            "'o' from the load order\n"
+            "'r' restores the list found at the scan\n"
+            "'o' shows the load order that will be exported, numbered\n"
             "'d' adds dependencies, 'w' opens this mod on the Workshop, 'p' opens the "
             "first problem link\n"
             "'e' exports, 'u' unsubscribes the deselected mods from Steam\n"
@@ -234,9 +244,9 @@ class ManageScreen(Screen):
             self.selected = known
             self.notice = f"restored a saved selection of {len(known)} mod(s)"
         else:
-            # Start from whatever the scanned load order had enabled.
+            # Start from whatever the scan recorded as enabled.
             self.selected = {r.key for r in self.refs if r.was_enabled}
-            self.notice = "starting from the mods the scan found enabled"
+            self.notice = f"starting from the mods {self.scan_origin}"
         self.refresh_all()
         table.focus()
 
@@ -262,13 +272,14 @@ class ManageScreen(Screen):
             table.add_column("ON", width=3)
             table.add_column("MOD", width=40)
             table.add_column("ID")
-        wanted = [r for r in self.refs if self._matches(r)]
+        base, positions = self._listing()
+        wanted = [r for r in base if self._matches(r)]
         # The same problems the panel is showing, so the marker and the panel
         # never disagree. With every mod flagged by a low typo, a list of two
         # hundred exclamation marks says nothing at all, and hiding the problems
         # while keeping their markers would be the worst of both.
         flagged = {m.strip().lower() for p in self.shown_problems() for m in p.mods}
-        rows = [self._row_for(ref, flagged) for ref in wanted]
+        rows = [self._row_for(ref, flagged, positions) for ref in wanted]
         # Ticking a box changes at most a handful of cells: the box itself, the
         # boxes of any dependency it pulled in, and the exclamation marks the new
         # problem list moved. The rows themselves are the same rows, in the same
@@ -286,12 +297,69 @@ class ManageScreen(Screen):
             + (f"   {self.notice}" if self.notice else "")
         )
 
-    def _row_for(self, ref: ModRef, flagged: set[str]) -> tuple[str, str, str]:
+    @property
+    def scan_origin(self) -> str:
+        """"enabled in <file>, read <when>", as much of it as is known.
+
+        The date is not decoration. A list saved in game after the scan is not
+        in here, and the only way to notice that is to be told how old this one
+        is.
+        """
+        parts = ["the scan found enabled"]
+        if self.order_source:
+            parts.append(f"in {Path(self.order_source).name}")
+        if self.scan_label:
+            parts.append(f"(scanned {self.scan_label})")
+        return " ".join(parts)
+
+    def resolved_order(self) -> tuple[list[str], list[str]]:
+        """The load order this selection would export, and any cycle in it.
+
+        One computation with three readers: the panel's "order" line, the order
+        view, and the export itself. They used to be two. The panel called
+        topological_order without `preferred` while the export called it with, so
+        the panel could report on a sequence that was not the one written out.
+        """
+        return topological_order(
+            self.by_key,
+            self.selected,
+            preferred=[
+                r.mod_id
+                for r in sorted(
+                    (r for r in self.refs if r.order_index is not None),
+                    key=lambda r: r.order_index,
+                )
+            ],
+        )
+
+    def _listing(self) -> tuple[list[ModRef], dict[str, int]]:
+        """The rows to draw and, in order view, the position of each.
+
+        Order view puts the selected mods in load order and numbers them, then
+        the rest alphabetically underneath. Showing only the selection would be
+        tidier, but then unticking a mod would make its row vanish under the
+        cursor. Here it moves down into the unnumbered part instead, which is
+        also where you go to tick something new.
+        """
+        if not self.order_view:
+            return list(self.refs), {}
+        ordered, _cycle = self.resolved_order()
+        keys = [k for k in (m.strip().lower() for m in ordered) if k in self.by_key]
+        positions = {key: index + 1 for index, key in enumerate(keys)}
+        rest = [r for r in self.refs if r.key not in positions]
+        return [self.by_key[k] for k in keys] + rest, positions
+
+    def _row_for(
+        self, ref: ModRef, flagged: set[str], positions: dict[str, int]
+    ) -> tuple[str, str, str]:
         """The three cells a mod occupies, as plain strings so they compare."""
         mark = CHECKED if ref.key in self.selected else UNCHECKED
         name = ref.name or ref.mod_id
         if ref.key in flagged and ref.key in self.selected:
             name = f"! {name}"
+        if self.order_view:
+            place = positions.get(ref.key)
+            name = f"{place:>3}  {name}" if place else f"  .  {name}"
         return (mark, name, ref.mod_id)
 
     def _patch_rows(self, table: DataTable, rows: list[tuple[str, str, str]]) -> None:
@@ -373,8 +441,9 @@ class ManageScreen(Screen):
         add = lambda line: lines.append((line, False))  # noqa: E731
         add(f"  selected   {len(self.selected)}")
         add(f"  installed  {len(self.by_key)}")
-        ordered, cycle = topological_order(self.by_key, self.selected)
+        _ordered, cycle = self.resolved_order()
         add(f"  order      {'has a cycle' if cycle else 'resolved'}")
+        add(f"  view       {'load order' if self.order_view else 'alphabetical'}")
 
         current = self.current_ref()
         self.refresh_poster(current)
@@ -394,6 +463,12 @@ class ManageScreen(Screen):
             breaks = dependents_of(self.by_key, current.key, self.selected)
             if breaks and current.key in self.selected:
                 add(f"  needed by {', '.join(breaks)}")
+            if current.order_notes:
+                # Quoted, never acted on. The tool can order what require= says;
+                # this is the part of the page it can only point at.
+                add("  order     its Workshop page says where to put it:")
+                for note in current.order_notes:
+                    add(f"            {note}")
 
         lines += [("", False), (rule, False), ("", False),
                   (self._problems_heading(), True), ("", False)]
@@ -475,9 +550,45 @@ class ManageScreen(Screen):
         self.notice = "cleared the selection"
         self.refresh_all()
 
-    def action_select_from_order(self) -> None:
+    def action_toggle_order_view(self) -> None:
+        """Swap between the alphabetical list and the order that gets exported.
+
+        Worth being clear about what this is not: it does not choose an order,
+        it shows the one already being computed. Until now that sequence only
+        existed inside the exported file, so the first chance to see it was
+        after writing it out.
+        """
+        self.order_view = not self.order_view
+        if self.order_view:
+            _ordered, cycle = self.resolved_order()
+            self.notice = (
+                "load order view: dependencies before dependents, unselected "
+                "mods below"
+            )
+            if cycle:
+                self.notice += f"; {len(cycle)} mod(s) are in a loop and sit at the end"
+        else:
+            self.notice = "alphabetical view"
+        self.refresh_all()
+
+    def action_restore_scanned(self) -> None:
+        """Put the ticks back to what the scan recorded as enabled.
+
+        Not the current state of the game. The scan read a mod list once and
+        froze it; anything saved in game since then is invisible until the next
+        scan. Saying so in the notice is the point: the old wording called this
+        "the load order", which promised something it never did. It restores
+        which mods are on, never the sequence they load in.
+        """
+        if not self.has_order:
+            self.notice = (
+                "the scan found no mod list to read, so there is nothing to "
+                "restore; the selection is unchanged"
+            )
+            self.refresh_all()
+            return
         self.selected = {r.key for r in self.refs if r.was_enabled}
-        self.notice = "reset to the load order found by the scan"
+        self.notice = f"restored the {len(self.selected)} mod(s) {self.scan_origin}"
         self.refresh_all()
 
     def action_add_dependencies(self) -> None:
@@ -568,14 +679,7 @@ class ManageScreen(Screen):
         self.app.switch_screen(ScanScreen(then="manage"))
 
     def action_export(self) -> None:
-        ordered, cycle = topological_order(
-            self.by_key,
-            self.selected,
-            preferred=[r.mod_id for r in sorted(
-                (r for r in self.refs if r.order_index is not None),
-                key=lambda r: r.order_index,
-            )],
-        )
+        ordered, cycle = self.resolved_order()
         ini = export_server_ini(self.by_key, ordered)
         written: list[str] = []
         try:

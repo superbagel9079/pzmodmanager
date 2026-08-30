@@ -24,6 +24,13 @@ from .models import Finding, Severity
 log = logging.getLogger(__name__)
 
 
+def _order_notes(mod) -> list[str]:
+    """Read once at scan time, for the same reason as the poster path."""
+    from .steam import order_hints
+
+    return order_hints(getattr(mod, "workshop_description", "") or "")
+
+
 def _poster_path(mod) -> str:
     """Resolved once at scan time, so the manager never walks the disk again."""
     from .posters import find_poster
@@ -70,6 +77,10 @@ class ModRef:
     was_enabled: bool = True
     order_index: int | None = None
     poster_path: str = ""
+    # Lines from the Workshop page that talk about load order. Harvested at scan
+    # time because the description is not kept in the saved scan, and the manager
+    # must never go back to the network to draw a panel.
+    order_notes: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -103,6 +114,7 @@ class ModRef:
             was_enabled=mod.enabled,
             order_index=mod.order_index,
             poster_path=_poster_path(mod),
+            order_notes=_order_notes(mod),
         )
 
     def to_json(self) -> dict:
@@ -116,6 +128,7 @@ class ModRef:
             "enabled": self.was_enabled,
             "order_index": self.order_index,
             "poster": self.poster_path,
+            "order_notes": self.order_notes,
         }
 
     @classmethod
@@ -130,6 +143,7 @@ class ModRef:
             was_enabled=bool(data.get("enabled", True)),
             order_index=data.get("order_index"),
             poster_path=data.get("poster", ""),
+            order_notes=list(data.get("order_notes", [])),
         )
 
 
@@ -396,6 +410,33 @@ def validate(
                         links=_links_for(by_key, [ref.mod_id, target]),
                     )
                 )
+
+        if ref.order_notes:
+            # Deliberately not resolved into an order. The line is prose: it may
+            # name a mod that is not installed, it may be telling you what not to
+            # do, and acting on it would move a mod on the strength of a regular
+            # expression. Quoting it and linking the page is the honest limit.
+            #
+            # Medium on purpose. Low is what the typo noise sits at and what gets
+            # hidden first, and this is the one thing on the page that no other
+            # part of the tool can see for you.
+            problems.append(
+                Problem(
+                    kind="order_note",
+                    severity=Severity.MEDIUM,
+                    message=(
+                        f"{ref.mod_id} gives load order instructions on its "
+                        f"Workshop page: \"{ref.order_notes[0]}\""
+                    ),
+                    mods=[ref.mod_id],
+                    fix_hint=(
+                        "Requirements the tool can order for you are in require=. "
+                        "This one is only written in the description, so check the "
+                        "page and place the mod by hand."
+                    ),
+                    links=_links_for(by_key, [ref.mod_id]),
+                )
+            )
 
         for other in ref.incompatible:
             okey = other.strip().lower()

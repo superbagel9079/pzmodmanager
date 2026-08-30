@@ -390,3 +390,82 @@ def requires_in_description(description: str) -> list[str]:
             if name not in found:
                 found.append(name)
     return found
+
+
+# --------------------------------------------------------------------------- #
+# Load order written in prose
+# --------------------------------------------------------------------------- #
+#
+# Project Zomboid has no machine readable way to say "load me after that mod".
+# require= means "that mod must be present", which the tool can and does resolve
+# into an order. Everything else, and there is a lot of it, is written by hand in
+# the Workshop description: "NEEDS TO BE LOADED AFTER ELLIE'S TATTOO PARLOR", or
+# a screenshot of the author's own list.
+#
+# So this reads the prose. It never reorders anything on the strength of it: a
+# sentence is not a dependency, the mod it names may not be installed, and the
+# author may be describing what not to do. What it does is stop the instruction
+# being invisible, by quoting the line and pointing at the page.
+
+# BBCode, which Steam descriptions are full of. The bullet [*] has no letter
+# after the bracket, so it needs its own alternative.
+_BBCODE = re.compile(r"\[/?(?:\*|[a-zA-Z][^\]]{0,120})\]")
+
+_ORDER_PHRASE = re.compile(
+    r"\bload\s*order"
+    # load / loads / loaded / loading. Spelled out on purpose: "loaded?" reads
+    # as "loade" plus an optional d, which matches neither "load" nor anything
+    # else anyone writes. The word boundary matters too: without it "unable to
+    # reload after losing durability" is a load order instruction.
+    r"|\bload(?:s|ed|ing)?\s+(?:it\s+|this\s+|them\s+)?(?:after|before|above|below)"
+    r"|(?:must|should|needs?\s+to)\s+be\s+(?:load(?:ed)?\s+)?(?:after|before|above|below)"
+    r"|(?:place|put|move|keep)\s+(?:it\s+|this\s+|these\s+|them\s+)?(?:mod\s+|files\s+)?"
+    r"(?:at\s+the\s+)?(?:above|below|after|before|very\s+bottom|bottom|end|top)",
+    re.IGNORECASE,
+)
+
+# Lines that use the words without telling anyone to do anything. Bug report
+# boilerplate is the big one: half the pages that mention a load order are only
+# asking you to include yours in a report.
+_ORDER_NOISE = re.compile(
+    r"bug\s*report|steps\s+to\s+reproduce|reproduction\s+steps"
+    r"|mod\s*list\s*(?:/|,|\sand\s)\s*load\s*order"
+    r"|load\s*order\s*(?:/|,|\sand\s)\s*mod\s*list"
+    r"|load\s*order\s+(?:does\s*n[o']t|doesn't|does\s+not)\s+matter"
+    r"|can\s+depend\s+on\s+load\s*order",
+    re.IGNORECASE,
+)
+
+ORDER_HINT_LIMIT = 3
+_ORDER_HINT_WIDTH = 200
+
+
+def order_hints(description: str) -> list[str]:
+    """Lines of a description that tell you where to put the mod in the list.
+
+    Returns the author's own words, cleaned of BBCode and cut to a readable
+    length, at most three of them. Empty when the page says nothing about order,
+    which is the usual case: of 203 real subscriptions this finds 13.
+
+    A hint, never a fact. Read it, then go and look at the page.
+    """
+    if not description:
+        return []
+    found: list[str] = []
+    for raw in re.split(r"[\r\n]+", description):
+        line = _BBCODE.sub("", raw).strip(" \t*-•")
+        line = re.sub(r"\s+", " ", line)
+        # Headings ("Recommended Load Order") and bare mod names ("Mod Load
+        # Order Sorter") match the phrases without instructing anyone to do
+        # anything. An actual sentence is longer than four words.
+        if len(line) < 12 or len(line.split()) < 5:
+            continue
+        if not _ORDER_PHRASE.search(line) or _ORDER_NOISE.search(line):
+            continue
+        if len(line) > _ORDER_HINT_WIDTH:
+            line = line[: _ORDER_HINT_WIDTH - 3] + "..."
+        if line not in found:
+            found.append(line)
+        if len(found) == ORDER_HINT_LIMIT:
+            break
+    return found

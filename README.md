@@ -325,13 +325,21 @@ what would break if you dropped it, and its Workshop link:
 | `x` or SPACE | select or deselect the highlighted mod |
 | / | search by name or id |
 | a / n | select everything, or nothing |
-| o | reset to what the scanned load order had enabled |
+| r | restore the list the scan found enabled |
+| o | show the load order that will be exported, numbered |
 | d | pull in every missing dependency |
 | w | open this mod's Workshop page in Steam |
 | e | export the selection |
 | h | hide the minor problems: everything, hiding low, critical only |
 | u | unsubscribe the deselected mods from Steam, after confirmation |
 | ESC | back to the menu |
+
+`r` was `o` until recently, and was labelled "from the load order". Both halves
+were wrong. It never touched the order, only which mods are on; and what it puts
+back is a snapshot taken by the scan, so a list you saved in the game afterwards
+is not in it. It now names the file it read and the date it read it, and refuses
+outright when the scan found no list at all, because in that case every mod is
+recorded as enabled and restoring would tick all of them.
 
 #### B. Selecting and deselecting
 
@@ -350,7 +358,52 @@ you which selected mods still need what you just dropped, and leaves the choice
 to you. Incompatibilities, dependency cycles and serious file collisions are
 reported, never resolved behind your back.
 
-#### C. The export
+#### C. Seeing the order before you export it
+
+The list is alphabetical, which is right for finding a mod and wrong for
+answering "what order will these load in". `o` swaps to the load order view: the
+selected mods in the sequence that will be written out, numbered, with everything
+unselected below them marked `.` because it has no place in an order it is not
+part of.
+
+```
+  ON   MOD                            ID
+  [x]    1  Core Library               CoreLib
+  [x]    2  Weapon Framework           WeaponFw
+  [x]    3  Brita's Weapon Pack        Brita
+  [ ]    .  Hardcore Zombies           HardcoreZombies
+```
+
+This is the same computation the export runs, not a second one that might
+disagree. That mattered: the panel's `order: resolved` line used to sort without
+your existing order as a tie break while the export sorted with it, so the panel
+could vouch for a sequence that was not the one written to the file. Both now go
+through one function, and a test compares the rows on screen with the exported
+list.
+
+#### D. Load order instructions written in prose
+
+`require=` is the only ordering a mod declares in a form a machine can read, and
+the tool resolves it. A great deal of ordering is not declared there at all. It
+is written on the Workshop page, in sentences:
+
+```
+  order     its Workshop page says where to put it:
+            NEEDS TO BE LOADED AFTER ELLIE'S TATTOO PARLOR
+```
+
+Those lines are pulled out of the description at scan time, quoted in the side
+panel of the mod they belong to, and reported as a `medium` problem so they
+survive hiding the low noise. On a real set of 203 subscriptions this finds 15
+items. It is deliberately conservative: bug report boilerplate ("include your mod
+list/load order"), headings, and "load order doesn't matter" are all rejected.
+
+**Nothing is reordered on the strength of a sentence.** A line of prose is not a
+dependency: it may name a mod you do not have, it may be telling you what not to
+do, and acting on it would mean moving a mod because a regular expression matched.
+The tool quotes it and links the page. The placing is yours.
+
+#### E. The export
 
 The export produces a load order sorted so every mod comes after what it
 requires, using your existing order to break ties so a working list is disturbed
@@ -364,7 +417,7 @@ WorkshopItems=2392709985;3728775267;...
 They are written next to the report, along with a plain mod list and a file of
 Workshop links, and the selection is remembered for next time.
 
-#### D. Without the interface
+#### F. Without the interface
 
 The same thing works without the interface, which is handy for scripting a
 server:
@@ -381,7 +434,7 @@ dependency that an `--enable` pulled in. The resulting gap is reported rather
 than silently filled back, and exporting an unresolved selection prints a warning
 rather than refusing.
 
-#### E. On unsubscribing
+#### G. On unsubscribing
 
 There are two doors, and only one of them opens.
 

@@ -715,6 +715,206 @@ def test_toggle_keeps_the_view_still() -> None:
           "still: searching still lands the cursor on a row that exists")
 
 
+def test_order_hints() -> None:
+    """Load order instructions live in the description, so they get read there.
+
+    require= is the only ordering a mod declares in a way a machine can use, and
+    the tool already resolves it. Everything else is prose on the Workshop page:
+    "NEEDS TO BE LOADED AFTER ELLIE'S TATTOO PARLOR", or a screenshot of the
+    author's own list. That was invisible to the tool and therefore to the user.
+
+    These strings are shortened from real subscriptions. The rejects matter as
+    much as the hits: half the pages that say "load order" are only asking you
+    to paste yours into a bug report.
+    """
+    from pzmodmanager.steam import order_hints
+
+    hit = order_hints("[*]NEEDS TO BE LOADED AFTER ELLIE'S TATTOO PARLOR")
+    check(hit == ["NEEDS TO BE LOADED AFTER ELLIE'S TATTOO PARLOR"],
+          f"hints: an instruction is kept, with its BBCode stripped (got {hit})")
+    check(order_hints("[b]The mod must be below any other clothing mod it affects.[/b]"),
+          "hints: 'must be below' counts as an instruction")
+    check(order_hints("NeatUI Framework must be loaded before any mod that needs it"),
+          "hints: so does 'must be loaded before'")
+
+    for noise in [
+        "Include your mod list/load order and steps to reproduce in a bug report",
+        "Compatibility can depend on load order, versions and game build",
+        "Load order doesn't matter, just activate and go.",
+        "[h2]Recommended Load Order[/h2]",
+        "Mod Load Order Sorter",
+        "",
+    ]:
+        check(order_hints(noise) == [],
+              f"hints: nothing claimed for {noise[:44]!r}")
+
+    many = "\n".join(f"You must load it after mod number {i}" for i in range(9))
+    check(len(order_hints(many)) == 3,
+          "hints: at most three lines, so the panel stays readable")
+    long_line = "Put this mod below " + ("everything else " * 40)
+    check(len(order_hints(long_line)[0]) <= 200,
+          "hints: a very long line is cut rather than flooding the panel")
+
+    # And it has to reach the manager as a problem, at a level that survives
+    # hiding the low noise: this is the one thing on the page the tool cannot
+    # work out for itself.
+    ref = sel.ModRef(mod_id="Skin", name="Skin",
+                     order_notes=["Load this after Spongie's Customisation"])
+    problems = sel.validate({"skin": ref}, {"skin"}, [])
+    notes = [p for p in problems if p.kind == "order_note"]
+    check(len(notes) == 1, "hints: a note becomes one problem on the selection")
+    check(notes[0].severity is Severity.MEDIUM,
+          f"hints: reported above the low noise (got {notes[0].severity.label})")
+    check("Spongie" in notes[0].message,
+          "hints: the author's own words are quoted, not paraphrased")
+    check(sel.validate({"skin": sel.ModRef(mod_id="Skin")}, {"skin"}, []) == [],
+          "hints: a mod with nothing to say produces nothing")
+
+
+def test_order_view() -> None:
+    """'o' shows the order that gets exported, instead of hiding it in a file.
+
+    The sequence was already being computed, by topological_order, and the only
+    way to see it was to export and open the file. Worse, the panel's "order:
+    resolved" line called topological_order without the preferred order while
+    the export called it with, so the two could describe different sequences.
+    Both now go through resolved_order, and this checks the screen agrees with
+    the export down to the row.
+    """
+    import asyncio
+
+    from textual.coordinate import Coordinate
+
+    from pzmodmanager.manager_screen import ManageScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    # Alphabetically Alpha, Beta, Zeta. By dependency the reverse: Alpha needs
+    # Beta needs Zeta. So the two views cannot be confused with each other.
+    mods = [
+        sel.ModRef(mod_id="Alpha", name="Alpha", requires=["Beta"]),
+        sel.ModRef(mod_id="Beta", name="Beta", requires=["Zeta"]),
+        sel.ModRef(mod_id="Zeta", name="Zeta"),
+        sel.ModRef(mod_id="Lonely", name="Lonely"),
+    ]
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 30)) as pilot:
+            screen = ManageScreen(mods, [])
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#mods")
+            names = lambda: [table.get_cell_at(Coordinate(i, 1)).plain
+                             for i in range(table.row_count)]  # noqa: E731
+            ids = lambda: [table.get_cell_at(Coordinate(i, 2)).plain
+                           for i in range(table.row_count)]  # noqa: E731
+
+            seen["alphabetical"] = ids()
+            # Drop one, so the view has a mod with no place in the order.
+            screen.selected = {"alpha", "beta", "zeta"}
+            screen.refresh_all()
+            await pilot.pause()
+
+            await pilot.press("o")
+            for _ in range(3):
+                await pilot.pause()
+            seen["ordered"] = ids()
+            seen["labels"] = names()
+            seen["export"] = screen.resolved_order()[0]
+            seen["notice"] = screen.notice
+
+            await pilot.press("o")
+            for _ in range(3):
+                await pilot.pause()
+            seen["back"] = ids()
+        return seen
+
+    seen = asyncio.run(run())
+    check(seen["alphabetical"] == ["Alpha", "Beta", "Lonely", "Zeta"],
+          f"order view: the default list is alphabetical (got {seen['alphabetical']})")
+    check(seen["ordered"][:3] == ["Zeta", "Beta", "Alpha"],
+          f"order view: 'o' puts dependencies first (got {seen['ordered'][:3]})")
+    check(seen["ordered"][:3] == seen["export"],
+          "order view: and the rows are exactly what export would write")
+    check([n[:3].strip() for n in seen["labels"][:3]] == ["1", "2", "3"],
+          f"order view: the places are numbered (got {seen['labels'][:3]})")
+    check(seen["ordered"][3] == "Lonely" and seen["labels"][3].startswith("  ."),
+          f"order view: an unselected mod sits below, unnumbered "
+          f"(got {seen['labels'][3]!r})")
+    check("load order" in seen["notice"], "order view: the notice says which view this is")
+    check(seen["back"] == seen["alphabetical"],
+          "order view: pressing it again goes back to alphabetical")
+
+
+def test_restore_scanned() -> None:
+    """'r' puts back what the scan recorded, and says where that came from.
+
+    The key used to be 'o', labelled "from the load order", which promised the
+    wrong thing twice over. It never touched the order, only which mods are on;
+    and what it restores is a snapshot frozen at scan time, so a list saved in
+    game afterwards is not in it. Both of those have to be visible in the notice
+    or the key is a trap.
+
+    The empty case matters as much: with no mod list to read, the scan leaves
+    every mod marked enabled, so restoring would tick all of them. That is a
+    silent wrong answer, and it must refuse instead.
+    """
+    import asyncio
+
+    from pzmodmanager.manager_screen import ManageScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    mods = [
+        sel.ModRef(mod_id="Alpha", name="Alpha", was_enabled=True),
+        sel.ModRef(mod_id="Beta", name="Beta", was_enabled=True),
+        sel.ModRef(mod_id="Gamma", name="Gamma", was_enabled=False),
+    ]
+    real = store.StoredScan(
+        has_order=True,
+        order_source="/home/leo/Zomboid/Lua/saved_modlists.txt",
+        saved_at=1_700_000_000.0,
+    )
+    orderless = store.StoredScan(has_order=False)
+
+    async def run(scan) -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 30)) as pilot:
+            screen = ManageScreen(mods, [], scan=scan)
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("n")          # clear it first, so 'r' has work to do
+            await pilot.pause()
+            seen["after_none"] = set(screen.selected)
+            await pilot.press("r")
+            for _ in range(3):
+                await pilot.pause()
+            seen["restored"] = set(screen.selected)
+            seen["notice"] = screen.notice
+        return seen
+
+    good = asyncio.run(run(real))
+    empty = asyncio.run(run(orderless))
+
+    check(good["after_none"] == set(), "restore: 'n' really emptied the selection")
+    check(good["restored"] == {"alpha", "beta"},
+          f"restore: 'r' puts back exactly what the scan had on "
+          f"(got {sorted(good['restored'])})")
+    check("saved_modlists.txt" in good["notice"],
+          f"restore: the notice names the file it came from ({good['notice']})")
+    check("scanned" in good["notice"],
+          f"restore: and when that was, so a newer in game list is not assumed "
+          f"({good['notice']})")
+    check(empty["restored"] == set(),
+          "restore: with no mod list to read it changes nothing")
+    check("nothing to restore" in empty["notice"],
+          f"restore: and says why rather than ticking everything "
+          f"({empty['notice']})")
+
+
 def test_one_dependency_resolver() -> None:
     """The three places that ask "is this dependency installed" must agree.
 
@@ -1512,7 +1712,7 @@ def test_key_hints_match_bindings() -> None:
         prose = re.sub(r"\{[^{}]*\}", "", source)
         # A key hint is 'x' followed by what it does, or spelled out as press 'x'.
         shown = set(re.findall(r"[Pp]ress '([A-Za-z0-9])'", prose))
-        shown |= set(re.findall(r"'([A-Za-z0-9])' (?:opens|exports|adds|all|none|from|to|manages|searches|unsubscribes|clears)", prose))
+        shown |= set(re.findall(r"'([A-Za-z0-9])' (?:opens|exports|adds|all|none|from|to|manages|searches|unsubscribes|clears|restores|hides|toggles)", prose))
         # A screen may legitimately name no letter keys: the unsubscribe screen
         # only uses arrows, ENTER and ESC, on purpose.
         for key in sorted(shown):
@@ -1617,6 +1817,9 @@ def main() -> int:
         test_dependency_typo()
         test_problem_filter()
         test_toggle_keeps_the_view_still()
+        test_order_hints()
+        test_order_view()
+        test_restore_scanned()
         test_one_dependency_resolver()
         test_validate_knows_typos()
         test_multi_mod_items()
