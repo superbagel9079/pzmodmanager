@@ -273,8 +273,14 @@ def topological_order(
         if ref is None:
             continue
         for required in ref.requires:
-            rkey = required.strip().lower()
-            if rkey in keys:
+            # Through the shared resolver, like every other place that asks this
+            # question. This line used to compare the raw string, so a mod whose
+            # author wrote "require=\damnlib" got no ordering edge at all and the
+            # library was free to land after the hundred vehicles that need it.
+            # Nothing looked wrong: the panel said the order was resolved,
+            # because the panel asks a different function.
+            rkey = resolve_requirement(required, by_key)
+            if rkey is not None and rkey in keys:
                 waiting_on[key].add(rkey)
     for first, second in pin_edges(by_key, keys, pins):
         waiting_on[second].add(first)

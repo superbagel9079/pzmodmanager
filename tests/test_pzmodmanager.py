@@ -1145,7 +1145,22 @@ def test_one_dependency_resolver() -> None:
     check(probable_typo("\\tsarslib", by_key) == "tsarslib",
           "agree: the scan's rules resolve it the same way")
 
-    # The three answers, side by side, on every requirement in the set.
+    # 4. the sort, which is where the answer actually becomes a load order.
+    #
+    # This one was missed the first time, and the miss was invisible: the panel
+    # said "order: resolved" because the panel asks validate, while the sort
+    # compared the raw require= string and quietly built no edge at all. On a
+    # real set that meant damnlib landing after the hundred vehicles that need
+    # it, in an exported file nobody had reason to re-read.
+    ordered, cycle = sel.topological_order(by_key, everything)
+    check(not cycle, "agree: nothing here is circular, so the sort must succeed")
+    check(ordered.index("damnlib") < ordered.index("KI5trailers"),
+          f"agree: the sort puts a library before a mod that names it with a "
+          f"typo (got {ordered})")
+    check(ordered.index("tsarslib") < ordered.index("SVU3Core"),
+          "agree: and does it for every such pair, not one lucky case")
+
+    # The four answers, side by side, on every requirement in the set.
     for ref in refs:
         for required in ref.requires:
             resolved = resolve_requirement(required, by_key) is not None
@@ -1154,8 +1169,12 @@ def test_one_dependency_resolver() -> None:
                 p.kind == "dependency_not_installed" and required in p.message
                 for p in problems
             )
-            check(resolved == in_closure == in_panel,
-                  f"agree: all three say the same about {required!r}")
+            target = resolve_requirement(required, by_key)
+            in_sort = target is None or (
+                ordered.index(by_key[target].mod_id) < ordered.index(ref.mod_id)
+            )
+            check(resolved == in_closure == in_panel and in_sort,
+                  f"agree: all four say the same about {required!r}")
 
 
 def test_validate_knows_typos() -> None:
