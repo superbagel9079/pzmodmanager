@@ -154,6 +154,35 @@ def find_saves(limit: int = 25) -> list[SaveGame]:
     return found[:limit]
 
 
+def fit(save: SaveGame, ordered: list[str]) -> list[str]:
+    """The save's own mods, resequenced by a computed order.
+
+    The strict rule refuses anything that is not the same set, and it is right
+    to: the mods in a save are part of that save. But the usual reason the sets
+    differ is harmless. A save records what was active the last time it ran, and
+    a selection has moved on since, so the save still lists three variants that
+    were switched off and does not list a mod that was switched on.
+
+    This is the middle path. The set is still exactly the save's, untouched.
+    Mods the order knows about are put into its relative sequence. Mods it does
+    not know keep the exact index they already occupy, so they do not drift
+    while everything moves around them, which is the behaviour that can be
+    explained in one sentence and checked in one glance.
+    """
+    here = list(save.mods)
+    known_keys = {m.strip().lower() for m in ordered}
+    fixed = {i: m for i, m in enumerate(here) if m.strip().lower() not in known_keys}
+
+    save_keys = {m.strip().lower(): m for m in here}
+    moving = [save_keys[m.strip().lower()] for m in ordered if m.strip().lower() in save_keys]
+
+    out: list[str] = []
+    feed = iter(moving)
+    for index in range(len(here)):
+        out.append(fixed[index] if index in fixed else next(feed))
+    return out
+
+
 @dataclass
 class Plan:
     """What a write would do, worked out before anything is written."""
@@ -181,6 +210,27 @@ class Plan:
             for index, mod in enumerate(self.ordered)
             if before.get(mod) != index
         ]
+
+    @property
+    def fitted(self) -> list[str]:
+        """The order narrowed to this save's own mods. Always the same set."""
+        return fit(self.save, self.ordered)
+
+    @property
+    def fitted_moves(self) -> list[tuple[str, int, int]]:
+        """(mod, place now, place after) for the narrowed order."""
+        before = {m: i for i, m in enumerate(self.save.mods)}
+        return [
+            (mod, before[mod], index)
+            for index, mod in enumerate(self.fitted)
+            if before.get(mod) != index
+        ]
+
+    @property
+    def shared(self) -> int:
+        """How many mods the order and the save have in common."""
+        here = {m.strip().lower() for m in self.save.mods}
+        return sum(1 for m in self.ordered if m.strip().lower() in here)
 
     @property
     def refusal(self) -> str:

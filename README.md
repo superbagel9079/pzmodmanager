@@ -573,6 +573,15 @@ Three guard rails, none of them optional:
 3. **Cancel is the first and highlighted option** on the confirmation, which
    also lists which mods would move and to where. A stray ENTER does nothing.
 
+**When the two lists differ, which is the normal case.** A save records the mods
+that were active the last time it ran, so after switching a few variants off and
+one on, the sets no longer match and the strict rule refuses. Stopping there
+would be useless, so the screen offers to resequence the save's own mods
+instead: the ones your order knows about take its sequence, and the ones it does
+not know keep the exact index they already occupy, so nothing drifts around
+them. The save keeps every mod it has and gains none, which is why this goes
+through the same same-set check as any other write rather than around it.
+
 Everything in the file that is not a mod line is carried through byte for byte,
 including the version line, the maps block and the game's own indentation.
 Rebuilding the file would mean guessing at a format that is not documented and

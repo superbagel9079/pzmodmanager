@@ -1144,6 +1144,65 @@ def test_apply_to_save(tmp: Path) -> None:
     check(shown["file"] == original,
           "save: pressing ENTER on the default wrote nothing at all")
 
+    # The common case, which the strict rule refuses and should not simply
+    # stop at: a save lists the mods that were active last time it ran, and the
+    # selection has moved on. Three variants switched off are still in the save;
+    # one mod switched on is not. Narrowing keeps the save's set exactly.
+    target.write_text(original, encoding="utf-8")
+    save = savegame.read_save(folder)
+    moved_on = ["ETO_B", "NewMod", "ZombieBuddy"]      # AlicesMultiWear dropped
+    proposal = savegame.plan(save, moved_on)
+    check(not proposal.safe, "narrow: the strict rule still refuses this")
+    check(proposal.shared == 2, f"narrow: two mods are shared (got {proposal.shared})")
+
+    fitted = proposal.fitted
+    check(sorted(fitted) == sorted(save.mods),
+          f"narrow: the set is exactly the save's, none added or lost (got {fitted})")
+    check(fitted.index("ETO_B") < fitted.index("ZombieBuddy"),
+          f"narrow: the shared mods take the order's sequence (got {fitted})")
+    check(fitted[1] == "AlicesMultiWear",
+          f"narrow: a mod the order never mentions keeps its exact place "
+          f"(was index 1, got {fitted})")
+    check("NewMod" not in fitted,
+          "narrow: and a mod the save does not have is not smuggled in")
+
+    done, message, backup = savegame.apply(save, fitted)
+    check(done, f"narrow: the narrowed list writes through the same door ({message})")
+    check(savegame.read_save(folder).mods == fitted, "narrow: and lands in the file")
+    savegame.restore(savegame.read_save(folder), backup)
+
+    # The screen must offer it rather than only saying no.
+    async def refused() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 44)) as pilot:
+            screen = ApplyScreen(moved_on)
+            await app.push_screen(screen)
+            await pilot.pause()
+            screen.saves = [savegame.read_save(folder)]
+            screen.redraw()
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(3):
+                await pilot.pause()
+            choices = screen.query_one("#apply-choices")
+            seen["ids"] = [choices.get_option_at_index(i).id
+                           for i in range(choices.option_count)]
+            seen["highlighted"] = choices.highlighted
+            seen["notes"] = screen.query_one("#apply-notes").render().plain
+        return seen
+
+    offered = asyncio.run(refused())
+    check("fit" in offered["ids"],
+          f"narrow: the screen offers it instead of stopping (got {offered['ids']})")
+    check("write" not in offered["ids"],
+          "narrow: while the strict write stays off the table")
+    check(offered["ids"][0] == "cancel" and offered["highlighted"] == 0,
+          "narrow: Cancel is still first and still highlighted")
+    check("adding and removing none" in offered["notes"]
+          or "gains none" in offered["notes"],
+          "narrow: and the screen says the set does not change")
+
 
 def test_order_pins(tmp: Path) -> None:
     """Ordering the user states by hand, because most of it is stated nowhere.

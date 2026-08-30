@@ -153,17 +153,46 @@ class ApplyScreen(ModalScreen):
         ]
         if not plan.safe:
             lines += [
-                ("  THIS CANNOT BE APPLIED", True),
+                ("  THE TWO LISTS ARE NOT THE SAME", True),
                 ("", False),
-                ("  The order and this save do not hold the same mods. Adding or", False),
+                ("  A save records the mods that were active the last time it", False),
+                ("  ran, and your selection has moved on since. Adding or", False),
                 ("  removing a mod in a save is not something this tool will do:", False),
                 ("  a world with items in the ground can break either way.", False),
                 ("", False),
                 (f"  {plan.refusal}", False),
                 ("", False),
-                ("  Match your selection to the save, or start a new game.", False),
-                ("", False),
             ]
+            fitted = plan.fitted_moves
+            if plan.shared and fitted:
+                lines += [
+                    (f"  It can still resequence the {len(plan.save.mods)} mod(s) this "
+                     "save has.", True),
+                    ("", False),
+                    (f"  {plan.shared} of them are in your order and take its", False),
+                    ("  sequence. The other "
+                     f"{len(plan.save.mods) - plan.shared} keep the exact place they", False),
+                    ("  already occupy, so nothing drifts around them. The save", False),
+                    ("  keeps every mod it has, and gains none.", False),
+                    ("", False),
+                    (f"  {len(fitted)} mod(s) would move:", False),
+                ]
+                for mod_id, was, now in fitted[:MOVES_SHOWN]:
+                    lines.append((f"      {mod_id}: {was + 1} -> {now + 1}", False))
+                if len(fitted) > MOVES_SHOWN:
+                    lines.append((f"      ... {len(fitted) - MOVES_SHOWN} more", False))
+                lines += [
+                    ("", False),
+                    ("  THIS WRITES INSIDE YOUR SAVE.", True),
+                    ("  A timestamped copy of the current mods.txt is made first,", False),
+                    ("  in the same folder, and 'r' on this screen puts it back.", False),
+                    ("", False),
+                ]
+            else:
+                lines += [
+                    ("  Match your selection to the save, or start a new game.", False),
+                    ("", False),
+                ]
         elif not plan.moves:
             lines += [
                 ("  Nothing to do. This save is already in exactly this order.", False),
@@ -199,6 +228,14 @@ class ApplyScreen(ModalScreen):
         options = [Option("Cancel, change nothing", id="cancel")]
         if plan.safe and plan.moves:
             options.append(Option("Write this order into the save", id="write"))
+        elif not plan.safe and plan.shared and plan.fitted_moves:
+            options.append(
+                Option(
+                    f"Resequence the {len(plan.save.mods)} mod(s) this save has, "
+                    "adding and removing none",
+                    id="fit",
+                )
+            )
         if backups:
             options.append(Option(f"Restore {backups[0].name}", id="restore"))
         options.append(Option("Back to the save list", id="back"))
@@ -229,13 +266,22 @@ class ApplyScreen(ModalScreen):
             self.redraw()
         elif choice == "write":
             self.write_it()
+        elif choice == "fit":
+            self.write_it(narrowed=True)
         elif choice == "restore":
             self.action_restore()
 
-    def write_it(self) -> None:
-        if self.chosen is None:
+    def write_it(self, narrowed: bool = False) -> None:
+        """Write, either the order as it stands or narrowed to this save.
+
+        The narrowed list is built from the save's own mods, so it passes the
+        same set check as any other write. There is no second, weaker path into
+        savegame.apply: there is one door, and this walks through it.
+        """
+        if self.chosen is None or self.plan is None:
             return
-        done, message, _backup = savegame.apply(self.chosen, self.ordered)
+        wanted = self.plan.fitted if narrowed else self.ordered
+        done, message, _backup = savegame.apply(self.chosen, wanted)
         self.notice = message
         # Re-read, so the screen shows the file as it now is rather than as it
         # was when this screen opened.
