@@ -20,6 +20,9 @@ settings.json
 last-scan.json
 selection.json
 workshop-cache.json
+# Downloaded Workshop preview images, kept only so the Add mods screen does not
+# fetch the same picture twice. Deleting the folder costs one redownload.
+previews/
 
 # Left over from the old name, before the tool became pzmodmanager
 pzmodcheck/
