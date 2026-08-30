@@ -55,6 +55,7 @@ FIRST_RUN_ITEMS = [
     ("results", "Results"),
     ("manage", "Manage mods"),
     ("browse", "Add mods"),
+    ("server", "Match a server"),
     ("gamelog", "Game log"),
     ("scan", "Scan"),
     ("settings", "Settings"),
@@ -64,6 +65,7 @@ RETURNING_ITEMS = [
     ("results", "Last results"),
     ("manage", "Manage mods"),
     ("browse", "Add mods"),
+    ("server", "Match a server"),
     ("gamelog", "Game log"),
     ("scan", "Rescan"),
     ("settings", "Settings"),
@@ -330,6 +332,11 @@ class MenuScreen(Screen):
                     disabled=(
                         (key == "results" and not has_results)
                         or (key == "manage" and not has_mods)
+                        # Matching a server means comparing its list to what is
+                        # installed, so it needs a scan first. Offered greyed
+                        # out rather than hidden, so the entry is discoverable
+                        # before it is usable.
+                        or (key == "server" and not has_mods)
                     ),
                 )
                 for key, label in items
@@ -392,6 +399,21 @@ class MenuScreen(Screen):
                     steam_cache=self.app.scan_options.steam_cache,
                     installed_mods=scan.mods if scan else [],
                     build=self.app.scan_options.build,
+                )
+            )
+        elif choice == "server" and self.app.stored is not None:
+            from .serverlist_screen import ServerListScreen
+
+            # The tool's own export is offered as the default path, because the
+            # usual round trip is: export here, paste into the server, and later
+            # come back to check this machine still matches what was pasted.
+            self.app.push_screen(
+                ServerListScreen(
+                    self.app.stored.mods,
+                    selection_path=self.app.selection_path,
+                    steam_sdk=self.app.steam_sdk,
+                    suggested=self.app.report_path.parent
+                    / "pzmodmanager-server.ini.txt",
                 )
             )
         elif choice == "gamelog":

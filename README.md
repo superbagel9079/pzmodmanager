@@ -39,6 +39,7 @@ Client-side tool. Targets Build 42 by default; the Build 41 layout is handled to
 - [Part V. Mod images](#part-v-mod-images)
 - [Part VI. Workshop links](#part-vi-workshop-links)
 - [Part VII. When the game runs out of memory](#part-vii-when-the-game-runs-out-of-memory)
+- [Part VIII. Matching a server's mod list](#part-viii-matching-a-servers-mod-list)
 
 **[Chapter IV. Steam](#chapter-iv-steam)**
 
@@ -1053,6 +1054,100 @@ The distinction is worth holding onto because the reflex, when the game
 stutters, is to start disabling mods. If the stalls stop on their own after a
 minute, disabling mods proves nothing and costs an evening.
 
+### Part VIII. Matching a server's mod list
+
+If you play on a server, the mod set that matters is not yours, it is the
+server's. `Match a server` on the main menu takes the server's own file, works
+out the gap, and closes it.
+
+Point it at the server's ini, or at a file holding nothing but its two lines,
+which is exactly what this tool exports as `pzmodmanager-server.ini.txt`. That
+export is offered as the default path, because the usual round trip is: build a
+list here, paste it into the server, and come back later to check this machine
+still matches what was pasted.
+
+It reads two lines and ignores the rest of the file. `Mods=` is the ordered list
+of mod ids the server loads. `WorkshopItems=` is the set of Steam items those
+mods come from. Nothing else in a server ini describes the mod set, and a server
+ini also holds an RCON password, so there is no reason to parse further.
+
+#### Why this is not a job for the eye
+
+Three things make matching by hand fail, and they all look like the same thing:
+
+- **The two lines are not the same list.** One Workshop item can install several
+  mods. Item 3119788162 gives you both `ETO_B` and `ETO_P`, and you pick one. So
+  counting 261 mods against 218 items and finding they differ proves nothing.
+- **The names do not match the Workshop.** `Mods=` uses the id declared in
+  `mod.info`, not the title on the Workshop page. An item called *US Military
+  Grenades* installs a mod called `Explosives`, and one called *Craftable Tall
+  Wooden Fences* installs `CraftableTallWoodenFences` while the sprite that
+  breaks your connection is named `Base.Fenris_TallWoodenFence_PostEnded`.
+  Searching the Workshop for the id finds nothing.
+- **Subscribed and enabled are different states.** A mod installed but unticked
+  looks identical, from the file system, to a mod you do not have. The two need
+  opposite actions: one is a download, the other is a keystroke.
+
+So the screen sorts the gap into the three shapes that need three different
+actions, and names each one:
+
+```
+  to subscribe (1)
+      3781002132  Craftable Tall Wooden Fences
+  to tick (3)
+      SPNCCFaces
+      EQUIPMENT_UI_B42
+      Project_Cook
+  to untick (2)
+      VVA_slowdoors
+      VVA_PikamyDelight
+  listed by the server but not installed (1)
+      CraftableTallWoodenFences
+```
+
+The last group is the one worth reading twice. When there are items to
+subscribe to, those names are simply the mods that will arrive with them. When
+there are none, it means the server lists a mod that no item on its own list
+provides, which is a fault in the server's ini rather than on your machine.
+
+#### What confirming does
+
+`g` starts it, and nothing has happened yet at that point. Where there are items
+to download, the confirmation is the same subscribe screen the Workshop browser
+uses, with Cancel highlighted; where there is nothing to download, a smaller one
+says how many mods change state. Then, in order:
+
+1. subscribes to the Workshop items you do not have,
+2. watches the Workshop folder until Steam has actually written them, with the
+   same five minute deadline and the same escape as adding a mod by hand,
+3. saves the server's list as your selection, in the server's order,
+4. starts a scan, so the new mods are picked up and validated with the rest.
+
+The selection is saved whole, including the ids that have not landed yet. That
+looks wrong and is deliberate: the stored selection is intersected with the
+known mods every time it is read, so an id with no mod behind it is ignored
+until there is one, and then it is already ticked. Filtering at save time would
+untick every mod at the exact moment its download finished.
+
+#### What it will not do
+
+It never unsubscribes. A mod this server does not want may be one another server
+does, and the only thing an unsubscribe buys you is disk space you did not ask
+to reclaim. Mods the server does not list are unticked and left on disk. If you
+do want them gone, that is `u` in the manager, behind its own confirmation.
+
+It never writes into a save either. Matching a server changes the tool's own
+selection file and nothing else. Putting an order into the game stays behind the
+Apply screen, where the backup and the second confirmation live.
+
+#### When it says there is nothing to do
+
+If the screen reports that this machine already matches, the comparison covered
+every mod id, every Workshop item and the tick state of both sides. That is
+worth knowing before you spend an evening reading a connection log: if the
+lists agree and the game still refuses to load the world, the problem is on the
+server, not here.
+
 ## Chapter IV. Steam
 
 ### Part I. The Workshop lookup
@@ -1471,6 +1566,7 @@ pzmodmanager/
   logs.py        log file setup
   settings.py    what the tool remembers between runs
   selection.py   dependency closure, validation, load order, ini export
+  serverlist.py  reads a server ini and says what it takes to match it
   steam.py       Workshop lookups, their cache, and reading pasted ids
   store.py       saves the last scan so a later launch can reopen it
   fonts.py       embeds a display font in the report
@@ -1483,6 +1579,7 @@ pzmodmanager/
   manager_screen.py     the mod manager screen
   settings_screen.py    the editable settings screen
   browse_screen.py      finding Workshop items and subscribing to them
+  serverlist_screen.py  matching this machine to a server's mod list
   unsubscribe_screen.py the confirm and run screens for unsubscribing
   cli.py         command line
 tests/

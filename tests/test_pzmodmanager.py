@@ -2396,6 +2396,8 @@ def test_nothing_is_blue() -> None:
     from pzmodmanager.manager_screen import ManageScreen, PinsScreen
     from pzmodmanager.settings import Settings
     from pzmodmanager.settings_screen import SettingsScreen
+    from pzmodmanager.serverlist_screen import ConfirmAlignScreen, ServerListScreen
+    from pzmodmanager.serverlist import ServerDiff, ServerList
     from pzmodmanager.tui import MONOCHROME, ModCheckApp
 
     # Black, white, and the greys the stylesheet uses. Nothing else.
@@ -2418,6 +2420,12 @@ def test_nothing_is_blue() -> None:
                 ApplyScreen(["M0"]),
                 GameLogScreen(Path("/nowhere/console.txt")),
                 SettingsScreen(Settings(), None),
+                # The server screen has an Input, which is where the tint was
+                # most visible, and a confirmation built from an OptionList.
+                ServerListScreen([]),
+                ConfirmAlignScreen(
+                    ServerDiff(server=ServerList(), to_enable=["A"], to_disable=["B"])
+                ),
             ]
             for screen in screens:
                 await app.push_screen(screen)
@@ -2558,6 +2566,128 @@ def close_log_handlers() -> None:
 
 
 
+def test_server_list_matching(tmp: Path) -> None:
+    """Reading a server ini and saying exactly what stands between you and it.
+
+    This was written the day a connection failed on
+
+        WorldDictionaryException: [SpriteConfigs] Missing dictionary script on
+        client: Base.Fenris_TallWoodenFence_PostEnded
+
+    and it took an hour of grepping a server to learn that the missing thing was
+    an item called "Craftable Tall Wooden Fences", installing a mod called
+    CraftableTallWoodenFences, which the server had downloaded and then dropped
+    from its own Mods= line. None of the three names could have been guessed
+    from the other two.
+
+    So the comparison has to survive the three traps that make matching by hand
+    fail, and each is checked here:
+
+      - one Workshop item carrying several mods, so item counts and mod counts
+        never line up and neither is the answer on its own,
+      - an id that is installed but not ticked, which looks identical to a
+        missing mod from the file system and needs the opposite action,
+      - an id the server wants that is nowhere on the machine.
+
+    The last check is the one that matters most: the saved selection keeps the
+    ids that have not landed yet. Filtering them out here would mean the mods
+    being downloaded at that very moment come back unticked, which is the exact
+    failure the whole feature exists to prevent.
+    """
+    from pzmodmanager import serverlist
+
+    class FakeMod:
+        def __init__(self, mod_id, workshop_id=None, enabled=False):
+            self.mod_id = mod_id
+            self.workshop_id = workshop_id
+            self.enabled = enabled
+
+    installed = [
+        FakeMod("ETO_B", "3119788162", enabled=True),
+        FakeMod("ETO_P", "3119788162"),          # same item, second variant
+        FakeMod("damnlib", "2900580391", enabled=True),
+        FakeMod("VVA_slowdoors", "3281755175", enabled=True),  # not on the server
+        FakeMod("SPNCCFaces", "3414634809"),     # installed, item present, unticked
+    ]
+
+    ini = tmp / "bar.ini"
+    ini.write_text(
+        "PVP=true\n"
+        "# Enter the mod loading ID here.\n"
+        "Mods=ETO_B;damnlib;SPNCCFaces;CraftableTallWoodenFences\n"
+        "RCONPassword=hunter2\n"
+        "WorkshopItems=3119788162;2900580391;3414634809;3781002132\n",
+        encoding="utf-8",
+    )
+
+    server = serverlist.read_server_list(ini)
+    check(server.mod_ids == ["ETO_B", "damnlib", "SPNCCFaces",
+                             "CraftableTallWoodenFences"],
+          "server list: Mods= is read in the server's own order")
+    check(server.workshop_ids[-1] == "3781002132",
+          "server list: WorkshopItems= is read too")
+    check("hunter2" not in str(server),
+          "server list: the rest of the ini is ignored, passwords included")
+
+    diff = serverlist.compare(server, installed)
+
+    check(diff.to_subscribe == ["3781002132"],
+          f"server list: only the item that is not on disk is offered "
+          f"(got {diff.to_subscribe})")
+    check("3119788162" not in diff.to_subscribe,
+          "server list: an item already installed is never re-subscribed, "
+          "even when it carries a mod that is not ticked")
+    check(diff.not_installed == ["CraftableTallWoodenFences"],
+          f"server list: the mod behind that item is named too "
+          f"(got {diff.not_installed})")
+    check(diff.to_enable == ["SPNCCFaces"],
+          f"server list: installed but unticked means tick, not download "
+          f"(got {diff.to_enable})")
+    check(diff.to_disable == ["VVA_slowdoors"],
+          f"server list: what the server does not want is unticked "
+          f"(got {diff.to_disable})")
+    check(sorted(diff.unchanged) == ["ETO_B", "damnlib"],
+          "server list: what already agrees is left alone")
+    check(not diff.matched, "server list: this machine does not match yet")
+
+    # The saved selection keeps the id that has not arrived, because the store
+    # intersects with the known mods on every read. Dropping it here would
+    # untick the mod the moment its download finished.
+    check("CraftableTallWoodenFences" in diff.selection,
+          "server list: a mod still downloading stays in the saved selection")
+    check(diff.selection == server.mod_ids,
+          "server list: the selection is saved in the server's order")
+
+    # An explicit selection overrides what the scan recorded as enabled.
+    other = serverlist.compare(server, installed, selected={"eto_b"})
+    check("damnlib" in other.to_enable,
+          "server list: a passed selection is believed over the scan's flags")
+
+    # Once everything agrees, the screen must say so rather than offer work.
+    matched = [
+        FakeMod("ETO_B", "3119788162", enabled=True),
+        FakeMod("damnlib", "2900580391", enabled=True),
+    ]
+    small = serverlist.ServerList(mod_ids=["ETO_B", "damnlib"],
+                                  workshop_ids=["3119788162", "2900580391"])
+    check(serverlist.compare(small, matched).matched,
+          "server list: an already matching machine reports nothing to do")
+
+    # A file with neither line is a mistake worth naming, not a crash.
+    empty = tmp / "notes.txt"
+    empty.write_text("just some notes\n", encoding="utf-8")
+    check(not serverlist.read_server_list(empty),
+          "server list: a file with no Mods= line reads as empty")
+
+    # A duplicated id would make every count downstream wrong.
+    dupes = tmp / "dupes.ini"
+    dupes.write_text("Mods=A;B;A;;B\nWorkshopItems=1;1;2\n", encoding="utf-8")
+    twice = serverlist.read_server_list(dupes)
+    check(twice.mod_ids == ["A", "B"] and twice.workshop_ids == ["1", "2"],
+          "server list: duplicates and blanks are dropped, order kept")
+
+
+
 def test_crash_folders_are_not_the_current_order(tmp: Path) -> None:
     """A crash copy must never be mistaken for the player's current save.
 
@@ -2670,6 +2800,8 @@ def test_focus_never_greys_the_background() -> None:
     from pzmodmanager.manager_screen import ManageScreen, PinsScreen
     from pzmodmanager.settings import Settings
     from pzmodmanager.settings_screen import SettingsScreen
+    from pzmodmanager.serverlist_screen import ConfirmAlignScreen, ServerListScreen
+    from pzmodmanager.serverlist import ServerDiff, ServerList
     from pzmodmanager.tui import ModCheckApp
 
     async def run() -> dict:
@@ -2684,6 +2816,12 @@ def test_focus_never_greys_the_background() -> None:
                 ApplyScreen(["M0"]),
                 GameLogScreen(Path("/nowhere/console.txt")),
                 SettingsScreen(Settings(), None),
+                # The server screen has an Input, which is where the tint was
+                # most visible, and a confirmation built from an OptionList.
+                ServerListScreen([]),
+                ConfirmAlignScreen(
+                    ServerDiff(server=ServerList(), to_enable=["A"], to_disable=["B"])
+                ),
             ]
 
             def sweep(screen, label: str) -> None:
@@ -2750,6 +2888,7 @@ def main() -> int:
         test_game_log(tmp)
         test_apply_to_save(tmp)
         test_crash_folders_are_not_the_current_order(tmp)
+        test_server_list_matching(tmp)
         test_order_pins(tmp)
         test_restore_scanned()
         test_one_dependency_resolver()
