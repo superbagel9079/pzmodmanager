@@ -177,10 +177,10 @@ def dependency_closure(
         if ref is None:
             continue
         for required in ref.requires:
-            rkey = required.strip().lower()
-            if not rkey:
+            if not (required or "").strip():
                 continue
-            if rkey not in by_key:
+            rkey = resolve_requirement(required, by_key)
+            if rkey is None:
                 if required not in missing:
                     missing.append(required)
                 continue
@@ -276,6 +276,44 @@ def _links_for(by_key: dict[str, ModRef], mod_ids: list[str]) -> list[tuple[str,
     return links
 
 
+def resolve_requirement(needed: str, by_key: dict) -> str | None:
+    """The installed mod that satisfies this require= entry, or None.
+
+    THE one place that answers "is this dependency installed". There were three,
+    written at different times for the scan, the manager panel and the dependency
+    closure, and they drifted: a fix went into one and the other two carried on
+    reporting the same mod as missing. If you need this question answered
+    anywhere else, call this rather than writing a fourth.
+
+    Two ways to match. Exactly, on the lowercased id. Or after stripping stray
+    punctuation, because mod.info is typed by hand and nothing checks it: a real
+    machine has require=\\damnlib and require=\\tsarslib sitting next to the mods
+    they name. Returns the key into by_key, so the caller can tell which it was.
+    """
+    direct = (needed or "").strip().lower()
+    if not direct:
+        return None
+    if direct in by_key:
+        return direct
+    cleaned = direct.strip("\\/\"'`[](){}<>,;: ").strip()
+    if cleaned and cleaned != direct and cleaned in by_key:
+        return cleaned
+    return None
+
+
+def probable_typo(needed: str, by_key: dict) -> str | None:
+    """The mod a mis-typed require= meant, when it took cleaning to find it.
+
+    None when the entry matched exactly, because that is not a typo, and None
+    when nothing matched at all, because guessing which mod an author meant is
+    exactly the kind of helpfulness that invents facts.
+    """
+    key = resolve_requirement(needed, by_key)
+    if key is None or key == (needed or "").strip().lower():
+        return None
+    return by_key[key].mod_id
+
+
 def validate(
     by_key: dict[str, ModRef],
     keys: set[str],
@@ -295,10 +333,12 @@ def validate(
             continue
 
         for required in ref.requires:
-            rkey = required.strip().lower()
-            if rkey in keys:
+            if not (required or "").strip():
                 continue
-            if rkey not in by_key:
+            rkey = resolve_requirement(required, by_key)
+            typo = probable_typo(required, by_key)
+
+            if rkey is None:
                 links = [(f"search the Workshop for {required}", workshop_search_url(required))]
                 if ref.workshop_url:
                     links.append((f"{ref.mod_id} on the Workshop", ref.workshop_url))
@@ -312,15 +352,48 @@ def validate(
                         links=links,
                     )
                 )
-            else:
+                continue
+
+            target = by_key[rkey].mod_id
+            if rkey not in keys:
+                message = f"{ref.mod_id} requires {required}, which is not selected"
+                if typo:
+                    message = (
+                        f"{ref.mod_id} requires {required}, a typo for {target}, "
+                        "which is not selected"
+                    )
                 problems.append(
                     Problem(
                         kind="dependency_not_selected",
                         severity=Severity.CRITICAL,
-                        message=f"{ref.mod_id} requires {required}, which is not selected",
-                        mods=[ref.mod_id, by_key[rkey].mod_id],
-                        fix_hint=f"Select {by_key[rkey].mod_id} as well.",
-                        links=_links_for(by_key, [ref.mod_id, by_key[rkey].mod_id]),
+                        message=message,
+                        mods=[ref.mod_id, target],
+                        fix_hint=f"Select {target} as well.",
+                        links=_links_for(by_key, [ref.mod_id, target]),
+                    )
+                )
+                continue
+
+            if typo:
+                # Installed and selected, and the require= line still does not
+                # name it correctly. Nothing to do here, but the game reads the
+                # same broken id and will say so at load time, so it is worth
+                # one quiet line rather than silence.
+                problems.append(
+                    Problem(
+                        kind="dependency_typo",
+                        severity=Severity.LOW,
+                        message=(
+                            f"{ref.mod_id} requires {required}, which is a typo "
+                            f"for {target}"
+                        ),
+                        mods=[ref.mod_id, target],
+                        fix_hint=(
+                            f"Nothing to install: {target} is here and selected. "
+                            "The stray character is in the mod's own mod.info, so "
+                            "the game will complain too."
+                        ),
+                        links=_links_for(by_key, [ref.mod_id, target]),
                     )
                 )
 
@@ -456,3 +529,65 @@ def summarise(
     if not problems:
         return f"{head}   no problems"
     return f"{head}   {len(problems)} problem(s)   {breakdown}"
+
+
+# --------------------------------------------------------------------------- #
+# Workshop items that hold more than one mod
+# --------------------------------------------------------------------------- #
+#
+# A Workshop item and a mod are not the same thing, and this is where the
+# difference bites. Plenty of items ship several mods: "42.20 | Every Texture
+# Optimized" installs ETO_B and ETO_P, two variants you are meant to choose
+# between. Enabling happens per mod. Subscribing happens per item, and
+# unsubscribing takes every mod in the item with it.
+#
+# So deselecting one variant must never unsubscribe from the item, or the tool
+# would delete the variant you explicitly kept, while the confirmation listed
+# only the one you dropped.
+
+
+@dataclass
+class ItemToDrop:
+    """A Workshop item where every mod it installs has been deselected."""
+
+    workshop_id: str
+    mod_ids: list[str] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        return ", ".join(self.mod_ids) or self.workshop_id
+
+
+@dataclass
+class ItemHeldBack:
+    """An item that cannot be unsubscribed, because you still want part of it."""
+
+    workshop_id: str
+    dropping: list[str] = field(default_factory=list)
+    keeping: list[str] = field(default_factory=list)
+
+
+def unsubscribe_plan(by_key: dict, selected: set) -> tuple[list[ItemToDrop], list[ItemHeldBack]]:
+    """Split the deselected mods into what can safely be unsubscribed and what cannot.
+
+    Returns (safe, held back). An item is safe only when every mod it installs
+    is deselected. One kept mod holds the whole item back, because Steam has no
+    way to remove part of one.
+    """
+    by_item: dict[str, list] = {}
+    for ref in by_key.values():
+        if ref.workshop_id:
+            by_item.setdefault(str(ref.workshop_id), []).append(ref)
+
+    safe: list[ItemToDrop] = []
+    held: list[ItemHeldBack] = []
+    for workshop_id, refs in sorted(by_item.items()):
+        dropping = sorted(r.mod_id for r in refs if r.key not in selected)
+        keeping = sorted(r.mod_id for r in refs if r.key in selected)
+        if not dropping:
+            continue
+        if keeping:
+            held.append(ItemHeldBack(workshop_id, dropping, keeping))
+        else:
+            safe.append(ItemToDrop(workshop_id, dropping))
+    return safe, held

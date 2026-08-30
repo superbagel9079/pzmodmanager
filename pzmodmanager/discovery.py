@@ -133,6 +133,34 @@ def read_mod_folder(
         mod.available_branches = sorted(n for n in names if is_version_dir(n))
         return mod
 
+    if layout == "mixed":
+        # Both layouts in one folder. The game running the target build reads
+        # the version branch, so that mod.info is the one that counts; the root
+        # is the Build 41 fallback and is only used when no branch fits.
+        branch, warning = select_branch(names, build)
+        # A branch from another major is not an answer here. The root mod.info
+        # IS the Build 41 version of this mod, so on a Build 41 machine looking
+        # at a folder whose only branch is 42.15, the root is what the game
+        # reads and what this tool should report.
+        if branch and branch.split(".")[0] != str(build).split(".")[0]:
+            branch, warning = None, None
+        info = mod_dir / branch / "mod.info" if branch else None
+        if info is None or not info.is_file():
+            info, branch, warning = flat_info, None, None
+        mod = build_mod(info, source=source, workshop_id=workshop_id)
+        mod.root = mod_dir
+        mod.info_path = info
+        mod.layout = "versioned" if branch else "flat"
+        mod.branch = branch
+        mod.branch_warning = warning
+        mod.available_branches = sorted(n for n in names if is_version_dir(n))
+        if branch:
+            log.info(
+                "%s: root mod.info and version folders both present, reading %s",
+                mod_dir.name, branch,
+            )
+        return mod
+
     if layout == "versioned":
         branch, warning = select_branch(names, build)
         candidates = []

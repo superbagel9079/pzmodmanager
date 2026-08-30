@@ -21,7 +21,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
 from .settings import Settings
-from .tui import RETRO_CSS
+from .tui import RETRO_CSS, Plain, cell
 
 # name, label, kind, help
 ROWS = [
@@ -165,7 +165,7 @@ class SettingsScreen(Screen):
     # ------------------------------------------------------------------ view --
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "Arrow keys to move, ENTER to change a value, 'd' to clear one\n"
             "Saved straight away, but read by the next scan: change something here,"
             " then run Scan. ESC returns to the menu.",
@@ -174,11 +174,11 @@ class SettingsScreen(Screen):
         with Container(id="settings-area"):
             yield DataTable(id="rows", cursor_type="row", zebra_stripes=False)
         with Container(id="editor"):
-            yield Static("", id="editor-label")
-            yield Static("", id="editor-help")
+            yield Plain("", id="editor-label")
+            yield Plain("", id="editor-help")
             yield Input(id="value")
-        yield Static("", id="detected")
-        yield Static("", id="footer")
+        yield Plain("", id="detected")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         table = self.query_one("#rows", DataTable)
@@ -201,7 +201,7 @@ class SettingsScreen(Screen):
                 )
             else:
                 value = self.settings.describe(name)
-            table.add_row(label, value, key=name)
+            table.add_row(cell(label), cell(value), key=name)
         if ROWS:
             table.move_cursor(row=min(position, len(ROWS) - 1))
         self.query_one("#footer", Static).update(
@@ -325,7 +325,7 @@ class SettingsScreen(Screen):
             table = self.query_one("#rows", DataTable)
             if self.value_column is not None:
                 try:
-                    table.update_cell(name, self.value_column, "ENTER again to confirm")
+                    table.update_cell(name, self.value_column, cell("ENTER again to confirm"))
                 except Exception:
                     pass
             self.query_one("#footer", Static).update(self.notice)

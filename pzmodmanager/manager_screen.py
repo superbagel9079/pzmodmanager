@@ -26,6 +26,7 @@ from textual.widgets import DataTable, Input, Static
 from . import store
 from .posters import pillow_available, poster_blocks
 from .tui import RETRO_CSS as _RETRO
+from .tui import Plain, cell, panel as _panel
 from .selection import (
     ModRef,
     Problem,
@@ -36,6 +37,7 @@ from .selection import (
     export_text,
     index_by_key,
     summarise,
+    unsubscribe_plan,
     topological_order,
     validate,
 )
@@ -44,6 +46,17 @@ from .selection import (
 # "[x]" as a markup tag and drop it, leaving an empty column.
 CHECKED = "[x]"
 UNCHECKED = "[ ]"
+
+# What the problems panel shows, cycled with 'h'. A mod set of two hundred
+# throws a lot of low findings, mostly typos in other people's mod.info, and
+# eighteen of those bury the one critical that actually stops the game loading.
+# The counts in the footer always stay honest: this hides rows, not facts.
+PROBLEM_VIEWS = [
+    ("everything", 0),
+    ("hiding low", 2),
+    ("critical only", 4),
+]
+
 
 _OWN_CSS = """
 #manage-body {
@@ -127,12 +140,12 @@ class ExportScreen(ModalScreen):
     }
     """
 
-    def __init__(self, body: str) -> None:
+    def __init__(self, body) -> None:
         super().__init__()
         self.body = body
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(Static(self.body, id="export-text"), id="export-box")
+        yield VerticalScroll(Plain(self.body, id="export-text"), id="export-box")
 
     def action_dismiss_screen(self) -> None:
         self.dismiss()
@@ -155,6 +168,7 @@ class ManageScreen(Screen):
         Binding("p,P", "open_problem_link", "Problem link"),
         Binding("e,E", "export", "Export"),
         Binding("u,U", "unsubscribe", "Unsubscribe"),
+        Binding("h,H", "cycle_problems", "Filter problems"),
         Binding("slash", "focus_search", "Search"),
     ]
 
@@ -181,26 +195,28 @@ class ManageScreen(Screen):
         self.filter_text = ""
         self.visible_refs: list[ModRef] = []
         self.problems: list[Problem] = []
+        self.problem_view = 0
         self.notice = ""
 
     # ------------------------------------------------------------------ view --
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "'x' or SPACE toggles, '/' searches, 'a' all, 'n' none, "
             "'o' from the load order\n"
             "'d' adds dependencies, 'w' opens this mod on the Workshop, 'p' opens the "
             "first problem link\n"
-            "'e' exports, 'u' unsubscribes the deselected mods from Steam, ESC returns",
+            "'e' exports, 'u' unsubscribes the deselected mods from Steam\n"
+            "'h' hides the minor problems, ESC returns",
             id="hint",
         )
         yield Input(placeholder="search...", id="search")
         with Horizontal(id="manage-body"):
             yield DataTable(id="mods", cursor_type="row", zebra_stripes=False)
             yield VerticalScroll(
-                Static("", id="poster"), Static("", id="side"), id="sidebox"
+                Plain("", id="poster"), Plain("", id="side"), id="sidebox"
             )
-        yield Static("", id="footer")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         table = self.query_one("#mods", DataTable)
@@ -242,17 +258,40 @@ class ManageScreen(Screen):
             table.add_column("MOD", width=40)
             table.add_column("ID")
         previous = table.cursor_row
+        # Where the list was scrolled to, not just which row was highlighted.
+        # clear() sends the scroll back to the top, and move_cursor afterwards
+        # only scrolls far enough to bring the row into view, which parks it on
+        # the bottom edge. Ticking a box then threw the whole list around.
+        before = table.scroll_offset
+        rows_before = len(self.visible_refs)
         table.clear()
         self.visible_refs = [r for r in self.refs if self._matches(r)]
-        flagged = {m.strip().lower() for p in self.problems for m in p.mods}
+        # The same problems the panel is showing, so the marker and the panel
+        # never disagree. With every mod flagged by a low typo, a list of two
+        # hundred exclamation marks says nothing at all, and hiding the problems
+        # while keeping their markers would be the worst of both.
+        flagged = {m.strip().lower() for p in self.shown_problems() for m in p.mods}
         for index, ref in enumerate(self.visible_refs):
             mark = CHECKED if ref.key in self.selected else UNCHECKED
             name = ref.name or ref.mod_id
             if ref.key in flagged and ref.key in self.selected:
                 name = f"! {name}"
-            table.add_row(Text(mark), name, ref.mod_id, key=str(index))
+            table.add_row(cell(mark), cell(name), cell(ref.mod_id), key=str(index))
         if self.visible_refs:
             table.move_cursor(row=min(previous, len(self.visible_refs) - 1))
+            # Put the view back exactly where it was, but only when the list is
+            # the same length. Ticking a box cannot change the number of rows,
+            # so the old offset is still right. Searching does change it, and
+            # there the cursor should be brought into view normally.
+            #
+            # It has to be scheduled, not called. move_cursor does not scroll
+            # immediately after a rebuild: it queues _scroll_cursor_into_view
+            # with call_after_refresh, so anything done here and now is undone a
+            # moment later. Queueing behind it is what actually holds.
+            if rows_before == len(self.visible_refs):
+                table.call_after_refresh(
+                    table.scroll_to, x=before.x, y=before.y, animate=False, force=True
+                )
         self.query_one("#footer", Static).update(
             summarise(self.by_key, self.selected, self.problems)
             + (f"   {self.notice}" if self.notice else "")
@@ -273,51 +312,83 @@ class ManageScreen(Screen):
         if art is not None:
             widget.update(art)
         elif not pillow_available():
-            widget.update("[dim]install Pillow to see mod posters here[/dim]")
+            widget.update(Text("install Pillow to see mod posters here", style="dim"))
         else:
-            widget.update("[dim]no poster shipped with this mod[/dim]")
+            widget.update(Text("no poster shipped with this mod", style="dim"))
+
+    def shown_problems(self) -> list[Problem]:
+        """The problems the panel is currently showing, worst first."""
+        _label, floor = PROBLEM_VIEWS[self.problem_view]
+        return [p for p in self.problems if p.severity.weight >= floor]
+
+    def _problems_heading(self) -> str:
+        label, _floor = PROBLEM_VIEWS[self.problem_view]
+        shown = len(self.shown_problems())
+        if shown == len(self.problems):
+            return f"PROBLEMS ({shown})"
+        return f"PROBLEMS ({shown} of {len(self.problems)}, {label})"
+
+    def action_cycle_problems(self) -> None:
+        self.problem_view = (self.problem_view + 1) % len(PROBLEM_VIEWS)
+        label, _floor = PROBLEM_VIEWS[self.problem_view]
+        hidden = len(self.problems) - len(self.shown_problems())
+        self.notice = (
+            f"showing {label}" + (f", {hidden} hidden" if hidden else "")
+        )
+        self.refresh_table()
+        self.refresh_side()
 
     def refresh_side(self) -> None:
         rule = "-" * 34
-        lines: list[str] = ["", "[b]SELECTION[/b]", ""]
-        lines.append(f"  selected   {len(self.selected)}")
-        lines.append(f"  installed  {len(self.by_key)}")
+        # (text, bold). Nothing here is markup, so nothing here can be misread
+        # as markup: mod names and problem messages arrive full of brackets.
+        lines: list[tuple[str, bool]] = [("", False), ("SELECTION", True), ("", False)]
+        add = lambda line: lines.append((line, False))  # noqa: E731
+        add(f"  selected   {len(self.selected)}")
+        add(f"  installed  {len(self.by_key)}")
         ordered, cycle = topological_order(self.by_key, self.selected)
-        lines.append(f"  order      {'has a cycle' if cycle else 'resolved'}")
+        add(f"  order      {'has a cycle' if cycle else 'resolved'}")
 
         current = self.current_ref()
         self.refresh_poster(current)
         if current:
-            lines += ["", rule, "", f"[b]{current.name or current.mod_id}[/b]"]
-            lines.append(f"  id        {current.mod_id}")
+            lines += [("", False), (rule, False), ("", False),
+                      (current.name or current.mod_id, True)]
+            add(f"  id        {current.mod_id}")
             if current.workshop_url:
-                lines.append(f"  workshop  {current.workshop_id}")
-                lines.append(f"  link      {current.workshop_url}")
-                lines.append("            press 'w' to open it in Steam")
-            lines.append(f"  source    {current.source or 'unknown'}")
+                add(f"  workshop  {current.workshop_id}")
+                add(f"  link      {current.workshop_url}")
+                add("            press 'w' to open it in Steam")
+            add(f"  source    {current.source or 'unknown'}")
             if current.requires:
-                lines.append(f"  requires  {', '.join(current.requires)}")
+                add(f"  requires  {', '.join(current.requires)}")
             if current.incompatible:
-                lines.append(f"  conflicts {', '.join(current.incompatible)}")
+                add(f"  conflicts {', '.join(current.incompatible)}")
             breaks = dependents_of(self.by_key, current.key, self.selected)
             if breaks and current.key in self.selected:
-                lines.append(f"  needed by {', '.join(breaks)}")
+                add(f"  needed by {', '.join(breaks)}")
 
-        lines += ["", rule, "", f"[b]PROBLEMS ({len(self.problems)})[/b]", ""]
+        lines += [("", False), (rule, False), ("", False),
+                  (self._problems_heading(), True), ("", False)]
+        shown = self.shown_problems()
         if not self.problems:
-            lines.append("  Nothing blocking this selection.")
-        for problem in self.problems[:20]:
-            lines.append(f"  [{problem.severity.label}] {problem.message}")
+            add("  Nothing blocking this selection.")
+        elif not shown:
+            _label, _floor = PROBLEM_VIEWS[self.problem_view]
+            add(f"  Nothing at this level. {len(self.problems)} hidden.")
+            add("  Press 'h' to show them.")
+        for problem in shown[:20]:
+            add(f"  [{problem.severity.label}] {problem.message}")
             if problem.fix_hint:
-                lines.append(f"      {problem.fix_hint}")
+                add(f"      {problem.fix_hint}")
             for label, url in problem.links:
-                lines.append(f"      {label}:")
-                lines.append(f"      {url}")
-            lines.append("")
-        if len(self.problems) > 20:
-            lines.append(f"  ... {len(self.problems) - 20} more")
+                add(f"      {label}:")
+                add(f"      {url}")
+            add("")
+        if len(shown) > 20:
+            add(f"  ... {len(shown) - 20} more")
 
-        self.query_one("#side", Static).update("\n".join(lines))
+        self.query_one("#side", Static).update(_panel(lines))
 
     def current_ref(self) -> ModRef | None:
         table = self.query_one("#mods", DataTable)
@@ -425,13 +496,20 @@ class ManageScreen(Screen):
         from .steamsdk import find_library
         from .unsubscribe_screen import UnsubscribeScreen
 
-        targets = [
-            ref
-            for key, ref in sorted(self.by_key.items())
-            if key not in self.selected and ref.workshop_id
-        ]
+        # Grouped by Workshop item, because that is the unit Steam removes. A
+        # deselected mod sharing an item with one you kept is NOT a target:
+        # unsubscribing would delete the one you kept, and the old code did
+        # exactly that while listing only the mod you dropped.
+        targets, held = unsubscribe_plan(self.by_key, self.selected)
         if not targets:
-            self.notice = "nothing deselected that came from the Workshop"
+            if held:
+                names = ", ".join(h.workshop_id for h in held[:3])
+                self.notice = (
+                    f"nothing can be unsubscribed: item(s) {names} also hold mods "
+                    "you kept, and Steam cannot remove part of an item"
+                )
+            else:
+                self.notice = "nothing deselected that came from the Workshop"
             self.refresh_table()
             return
 
@@ -441,7 +519,7 @@ class ManageScreen(Screen):
         # "library not found" on a path that was right.
         configured = getattr(self.app, "steam_sdk", None) or self.steam_sdk
         self.app.push_screen(
-            UnsubscribeScreen(targets, find_library(configured)),
+            UnsubscribeScreen(targets, find_library(configured), held=held),
             self._after_unsubscribe,
         )
 
@@ -490,20 +568,25 @@ class ManageScreen(Screen):
         store.save_selection(ordered, self.selection_path)
 
         blocking = [p for p in self.problems if p.severity.weight >= 3]
-        body_lines = ["", "[b]SERVER INI LINES[/b]", ""]
-        body_lines += ["  " + line for line in ini.strip().splitlines()]
-        body_lines += ["", "[b]WRITTEN TO[/b]", ""]
-        body_lines += [f"  {path}" for path in written]
+        body_lines: list[tuple[str, bool]] = [("", False), ("SERVER INI LINES", True), ("", False)]
+        body_lines += [("  " + line, False) for line in ini.strip().splitlines()]
+        body_lines += [("", False), ("WRITTEN TO", True), ("", False)]
+        body_lines += [(f"  {path}", False) for path in written]
         if cycle:
-            body_lines += ["", "[b]WARNING[/b]", "",
-                           "  These mods require each other in a loop, so no order",
-                           "  can satisfy them all: " + ", ".join(cycle)]
+            body_lines += [
+                ("", False), ("WARNING", True), ("", False),
+                ("  These mods require each other in a loop, so no order", False),
+                ("  can satisfy them all: " + ", ".join(cycle), False),
+            ]
         if blocking:
-            body_lines += ["", f"[b]{len(blocking)} PROBLEM(S) STILL OPEN[/b]", ""]
-            body_lines += [f"  {p.message}" for p in blocking[:12]]
-            body_lines += ["", "  Exported anyway. The selection is yours to make."]
-        body_lines += ["", "-" * 34, "", "  ESC to go back"]
-        self.app.push_screen(ExportScreen("\n".join(body_lines)))
+            body_lines += [("", False),
+                           (f"{len(blocking)} PROBLEM(S) STILL OPEN", True), ("", False)]
+            body_lines += [(f"  {p.message}", False) for p in blocking[:12]]
+            body_lines += [("", False),
+                           ("  Exported anyway. The selection is yours to make.", False)]
+        body_lines += [("", False), ("-" * 34, False), ("", False),
+                       ("  ESC to go back", False)]
+        self.app.push_screen(ExportScreen(_panel(body_lines)))
         self.notice = f"exported {len(ordered)} mod(s)"
         self.refresh_table()
 

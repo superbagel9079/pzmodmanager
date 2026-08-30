@@ -437,6 +437,566 @@ def test_browse_screen() -> None:
               f"menu: Add mods sits above Scan in the {name} menu")
 
 
+def test_mixed_layout(tmp: Path) -> None:
+    """A folder with a root mod.info AND version folders is one mod with two ids.
+
+    Found on a real machine. Hot Brass ships:
+
+        mods/..._Framework/mod.info        id=zHBVCEF      (the Build 41 name)
+        mods/..._Framework/42.15/mod.info  id=HBVCEFb42    (the Build 42 name)
+        mods/..._TacticalReload/42.16/mod.info  require=HBVCEFb42
+
+    The old classify_layout answered "flat" the moment a root mod.info existed,
+    so the scan read the Build 41 id on a Build 42 machine and reported
+    HBVCEFb42 as not installed, while it sat in the same Workshop item. A
+    critical finding about a dependency that was right there.
+    """
+    from pzmodmanager.builds import classify_layout
+    from pzmodmanager.discovery import discover_all
+
+    check(classify_layout(["42.15"], has_mod_info=True) == "mixed",
+          "layout: a root mod.info beside version folders is its own case")
+    check(classify_layout([], has_mod_info=True) == "flat",
+          "layout: a root mod.info alone is still flat")
+    check(classify_layout(["42.15", "common"], has_mod_info=False) == "versioned",
+          "layout: version folders alone are still versioned")
+    check(classify_layout(["media"], has_mod_info=False) == "unknown",
+          "layout: neither is still unknown")
+
+    root = tmp / "mixed" / "steamapps" / "workshop" / "content" / "108600"
+    framework = root / "3610677934" / "mods" / "Framework"
+    (framework / "42.15").mkdir(parents=True)
+    (framework / "mod.info").write_text("name=Framework\nid=zHBVCEF\n", encoding="utf-8")
+    (framework / "42.15" / "mod.info").write_text(
+        "name=Framework B42\nid=HBVCEFb42\n", encoding="utf-8")
+    reload_dir = root / "3610677934" / "mods" / "TacReload" / "42.16"
+    reload_dir.mkdir(parents=True)
+    (reload_dir / "mod.info").write_text(
+        "name=Tac Reload\nid=HBTacReload\nrequire=HBVCEFb42\n", encoding="utf-8")
+
+    def ids_for(build: str) -> list[str]:
+        mods, _ = discover_all(extra_paths=[root], use_defaults=False, build=build)
+        return sorted(m.mod_id for m in mods)
+
+    check(ids_for("42") == ["HBTacReload", "HBVCEFb42"],
+          f"layout: build 42 reads the branch id (got {ids_for('42')})")
+    check(ids_for("42.15") == ["HBTacReload", "HBVCEFb42"],
+          "layout: a pinned 42.x reads it too")
+    check(ids_for("41") == ["HBTacReload", "zHBVCEF"],
+          f"layout: build 41 reads the root id instead (got {ids_for('41')})")
+
+    mods, _ = discover_all(extra_paths=[root], use_defaults=False, build="42")
+    ids = {m.mod_id for m in mods}
+    needed = {r for m in mods for r in m.requires}
+    check(not (needed - ids),
+          "layout: and the dependency inside the same item is no longer 'missing'")
+
+
+def test_dependency_typo() -> None:
+    """A require= line that needs punctuation stripped is a typo, not a gap.
+
+    Real case: Standardized Vehicle Upgrades declares require=\\tsarslib, with a
+    stray backslash, while TsarsLib is installed. Reporting a missing dependency
+    there is true and useless.
+    """
+    from pzmodmanager.analyzers import probable_typo
+
+    by_key = sel.index_by_key([sel.ModRef(mod_id="TsarsLib"), sel.ModRef(mod_id="Brita")])
+    check(probable_typo("\\tsarslib", by_key) == "TsarsLib",
+          "typo: a stray backslash is seen through")
+    check(probable_typo("[Brita]", by_key) == "Brita",
+          "typo: so are stray brackets")
+    check(probable_typo("tsarslib", by_key) is None,
+          "typo: a plain case difference is not a typo, it already matches")
+    check(probable_typo("SomethingElse", by_key) is None,
+          "typo: an unrelated name is not guessed at")
+    check(probable_typo("\\nothing", by_key) is None,
+          "typo: and nothing is invented when the cleaned name is unknown either")
+
+
+def test_problem_filter() -> None:
+    """'h' hides the minor problems without hiding the counts.
+
+    A two hundred mod set produces a lot of low findings, mostly typos in other
+    people's mod.info, and eighteen of those bury the one critical that actually
+    stops the game loading. The filter hides rows, never facts: the footer keeps
+    reporting every problem by severity whatever the panel is showing.
+    """
+    import asyncio
+
+    from pzmodmanager.manager_screen import PROBLEM_VIEWS, ManageScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    mods = [sel.ModRef(mod_id="damnlib", workshop_id="1")]
+    mods += [sel.ModRef(mod_id=f"Car{i}", workshop_id=str(100 + i),
+                        requires=["\\damnlib"]) for i in range(6)]
+    mods.append(sel.ModRef(mod_id="Broken", workshop_id="9", requires=["ReallyGone"]))
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 44)) as pilot:
+            screen = ManageScreen(mods, [])
+            await app.push_screen(screen)
+            await pilot.pause()
+            screen.selected = set(screen.by_key)
+            screen.refresh_all()
+            await pilot.pause()
+
+            from textual.coordinate import Coordinate
+
+            table = screen.query_one("#mods")
+
+            def marked() -> int:
+                """Rows carrying the '!' that means 'involved in a problem'."""
+                return sum(
+                    1
+                    for row in range(len(screen.visible_refs))
+                    if str(table.get_cell_at(Coordinate(row, 1))).startswith("! ")
+                )
+
+            seen["total"] = len(screen.problems)
+            seen["views"] = []
+            for _ in range(len(PROBLEM_VIEWS) + 1):
+                seen["views"].append(
+                    (screen._problems_heading(), len(screen.shown_problems()), marked())
+                )
+                seen["footer"] = str(screen.query_one("#footer").visual)
+                await pilot.press("h")
+                await pilot.pause()
+        return seen
+
+    seen = asyncio.run(run())
+
+    check(seen["total"] == 7,
+          f"filter: the set really does have a pile of problems (got {seen['total']})")
+    headings = [h for h, _n, _m in seen["views"]]
+    counts = [n for _h, n, _m in seen["views"]]
+    marks = [m for _h, _n, m in seen["views"]]
+
+    check(counts[0] == 7, "filter: everything is shown to start with")
+    check(counts[1] == 1, f"filter: 'h' once hides the low ones (got {counts[1]})")
+    check(counts[2] == 1, "filter: 'h' again leaves only the critical")
+    check(counts[3] == 7, "filter: and once more brings them all back")
+    check("of 7" in headings[1] and "hiding low" in headings[1],
+          f"filter: the heading says what is hidden ({headings[1]})")
+    check(headings[0] == "PROBLEMS (7)",
+          "filter: and says nothing extra when nothing is hidden")
+    check("critical 1" in seen["footer"] and "low 6" in seen["footer"],
+          f"filter: the footer still counts every problem ({seen['footer'][:60]})")
+
+    # The '!' in the list means "involved in a problem", so it has to mean the
+    # problems you are looking at. Every mod flagged by a low typo turns the
+    # whole list into exclamation marks, which says nothing; keeping them while
+    # hiding the problems themselves would be worse than either.
+    # Eight rows, not seven: a typo problem names both the mod that has the
+    # broken require= line and the mod it meant, and both are genuinely
+    # involved. Six cars plus damnlib plus the one really broken mod.
+    check(marks[0] == 8,
+          f"filter: with everything shown, every involved mod is marked (got {marks[0]})")
+    check(marks[1] == 1,
+          f"filter: hiding low clears the markers with it (got {marks[1]})")
+    check(marks[2] == 1, "filter: critical only marks only that one")
+    check(marks[3] == 8, "filter: and showing everything brings the markers back")
+    check(marks[1] < marks[0],
+          "filter: hiding problems really does quieten the list")
+    check(marks[1] == counts[1],
+          "filter: the marked rows and the listed problems agree")
+
+
+def test_toggle_keeps_the_view_still() -> None:
+    """Ticking a box must not throw the list around.
+
+    refresh_table rebuilds every row, and clear() sends the scroll back to the
+    top. move_cursor afterwards scrolls only far enough to bring the row into
+    view, which parks it on the bottom edge. On a 249 mod list, ticking one box
+    jumped the whole view and left you hunting for where you were.
+
+    Searching is different and must keep working: it genuinely changes which
+    rows exist, so the old offset is meaningless and the cursor is brought into
+    view normally.
+    """
+    import asyncio
+
+    from pzmodmanager.manager_screen import ManageScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    mods = [sel.ModRef(mod_id=f"Mod{i:03d}", name=f"Mod {i:03d}", workshop_id=str(i))
+            for i in range(120)]
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 30)) as pilot:
+            screen = ManageScreen(mods, [])
+            await app.push_screen(screen)
+            await pilot.pause()
+            table = screen.query_one("#mods")
+
+            for _ in range(60):
+                await pilot.press("down")
+            await pilot.pause()
+            # Scroll the view without moving the cursor, the way a wheel does,
+            # so the cursor sits mid screen. This detail is the whole test: with
+            # the cursor already on the bottom edge, scrolling it back into view
+            # lands on the same offset by luck and the bug is invisible.
+            table.scroll_to(y=table.scroll_y - 12, animate=False, force=True)
+            await pilot.pause()
+            seen["row_before"] = table.cursor_row
+            seen["scroll_before"] = round(table.scroll_y)
+
+            await pilot.press("x")
+            for _ in range(4):
+                await pilot.pause()
+            seen["row_after"] = table.cursor_row
+            seen["scroll_after"] = round(table.scroll_y)
+            seen["ticked"] = bool(screen.selected)
+
+            await pilot.press("space")
+            for _ in range(4):
+                await pilot.pause()
+            seen["scroll_after_two"] = round(table.scroll_y)
+
+            screen.query_one("#search").focus()
+            await pilot.press(*"Mod 09")
+            await pilot.pause()
+            seen["rows_filtered"] = len(screen.visible_refs)
+            seen["cursor_visible"] = table.cursor_row < len(screen.visible_refs)
+        return seen
+
+    seen = asyncio.run(run())
+
+    check(seen["scroll_before"] > 0,
+          "still: the test actually scrolled somewhere first")
+    check(seen["row_after"] == seen["row_before"],
+          "still: toggling keeps the cursor on the same row")
+    check(seen["scroll_after"] == seen["scroll_before"],
+          f"still: and the list does not move ({seen['scroll_before']} -> "
+          f"{seen['scroll_after']})")
+    check(seen["ticked"], "still: the toggle did happen, this is not a no-op test")
+    check(seen["scroll_after_two"] == seen["scroll_before"],
+          "still: unticking does not move it either")
+    check(seen["rows_filtered"] > 0 and seen["cursor_visible"],
+          "still: searching still lands the cursor on a row that exists")
+
+
+def test_one_dependency_resolver() -> None:
+    """The three places that ask "is this dependency installed" must agree.
+
+    They did not, and that is the whole point of this test. The same question
+    was answered by three functions written at different times: the scan's
+    rules, the manager's problem panel, and the dependency closure behind the
+    'd' key and the footer. A fix went into one, the other two carried on
+    calling the same mod missing, and each round of that looked like a brand
+    new bug to whoever was reading the screen.
+
+    They now share resolve_requirement. This drives all three over the same mod
+    set and demands the same answer from each, so a fourth copy cannot quietly
+    appear and drift.
+    """
+    from pzmodmanager.analyzers import probable_typo
+    from pzmodmanager.selection import dependency_closure, resolve_requirement
+
+    refs = [
+        sel.ModRef(mod_id="damnlib", workshop_id="3171167894"),
+        sel.ModRef(mod_id="tsarslib", workshop_id="3402491515"),
+        sel.ModRef(mod_id="KI5trailers", workshop_id="3330403100",
+                   requires=["\\damnlib"]),
+        sel.ModRef(mod_id="SVU3Core", workshop_id="3403490889",
+                   requires=["\\tsarslib"]),
+        sel.ModRef(mod_id="Orphan", workshop_id="1", requires=["ReallyGone"]),
+    ]
+    by_key = sel.index_by_key(refs)
+    everything = set(by_key)
+
+    check(resolve_requirement("damnlib", by_key) == "damnlib",
+          "resolver: an exact id resolves to itself")
+    check(resolve_requirement("\\damnlib", by_key) == "damnlib",
+          "resolver: a stray backslash resolves to the real mod")
+    check(resolve_requirement("ReallyGone", by_key) is None,
+          "resolver: a genuinely absent mod resolves to nothing")
+    check(resolve_requirement("", by_key) is None,
+          "resolver: an empty require= entry is not a dependency")
+    check(probable_typo("damnlib", by_key) is None,
+          "resolver: an exact match is not reported as a typo")
+
+    # 1. the closure, which feeds the 'd' key and the footer's "missing from disk"
+    _closed, missing = dependency_closure(by_key, everything)
+    check(missing == ["ReallyGone"],
+          f"agree: the closure calls only the absent mod missing (got {missing})")
+    pulled, _ = dependency_closure(by_key, everything - {"damnlib"})
+    check("damnlib" in pulled,
+          "agree: and pressing 'd' pulls in a mod named by a typo")
+
+    # 2. the manager panel
+    problems = sel.validate(by_key, everything)
+    absent = [p for p in problems if p.kind == "dependency_not_installed"]
+    check(len(absent) == 1 and "ReallyGone" in absent[0].message,
+          f"agree: the panel calls only the same one missing (got {len(absent)})")
+    check(sum(1 for p in problems if p.kind == "dependency_typo") == 2,
+          "agree: and reports the two typos as typos")
+
+    # 3. the scan's rules
+    check(probable_typo("\\tsarslib", by_key) == "tsarslib",
+          "agree: the scan's rules resolve it the same way")
+
+    # The three answers, side by side, on every requirement in the set.
+    for ref in refs:
+        for required in ref.requires:
+            resolved = resolve_requirement(required, by_key) is not None
+            in_closure = required not in missing
+            in_panel = not any(
+                p.kind == "dependency_not_installed" and required in p.message
+                for p in problems
+            )
+            check(resolved == in_closure == in_panel,
+                  f"agree: all three say the same about {required!r}")
+
+
+def test_validate_knows_typos() -> None:
+    """The manager's own dependency check, which is NOT the scan's.
+
+    This is the lesson of the session written down. probable_typo was added to
+    analyzers.py, the scan's rules, and the manager kept reporting the same
+    dependency as missing because validate() carries a second, independent copy
+    of that check. Two code paths answering the same question is a bug waiting
+    for one of them to be fixed alone, so both are exercised here.
+
+    Taken from a real machine: Standardized Vehicle Upgrades declares
+    require=\\tsarslib, and Tsar's Common Library is installed, declaring
+    id=tsarslib. A stray backslash produced a critical about a mod sitting on
+    disk.
+    """
+    refs = [
+        sel.ModRef(mod_id="TsarsLib", workshop_id="3402491515"),
+        sel.ModRef(mod_id="SVU3Core", workshop_id="3403490889",
+                   requires=["\\tsarslib"]),
+        sel.ModRef(mod_id="SVU3V", workshop_id="3304582091",
+                   requires=["\\tsarslib", "\\SVU3Core"]),
+        sel.ModRef(mod_id="Needy", workshop_id="9", requires=["ReallyAbsent"]),
+    ]
+    by_key = sel.index_by_key(refs)
+
+    problems = sel.validate(by_key, {"tsarslib", "svu3core", "svu3v"})
+    kinds = {p.kind for p in problems}
+    check("dependency_not_installed" not in kinds,
+          "validate: a typo is no longer reported as a missing mod")
+    check(kinds == {"dependency_typo"},
+          f"validate: every one of them is a typo instead (got {kinds})")
+    check(all(p.severity is Severity.LOW for p in problems),
+          "validate: and none of them is critical any more")
+    check(any("TsarsLib" in p.message for p in problems),
+          "validate: the message names the mod actually installed")
+
+    # The typo target being installed but unticked is a selection problem.
+    problems = sel.validate(by_key, {"svu3core"})
+    kinds = {p.kind for p in problems}
+    check("dependency_not_selected" in kinds,
+          "validate: an unselected typo target is a selection problem")
+    check(all(p.kind != "dependency_typo" for p in problems),
+          "validate: and not dismissed as a harmless typo")
+
+    # A genuinely absent mod must stay critical. This is the check that stops
+    # the typo rule from quietly swallowing real problems.
+    problems = sel.validate(by_key, {"needy"})
+    check(any(p.kind == "dependency_not_installed" and p.severity is Severity.CRITICAL
+              for p in problems),
+          "validate: a genuinely missing mod is still critical")
+
+    # The scan's rules and the manager must agree about the same mod set.
+    from pzmodmanager.analyzers import probable_typo
+
+    check(probable_typo("\\tsarslib", by_key) == "TsarsLib",
+          "validate: the scan's rules and the manager share one typo check")
+
+
+def test_multi_mod_items() -> None:
+    """One Workshop item can install several mods, and that changes unsubscribing.
+
+    "42.20 | Every Texture Optimized" installs ETO_B and ETO_P, two variants you
+    choose between. Enabling is per mod. Subscribing is per ITEM, and Steam
+    cannot remove part of one.
+
+    The bug this guards was real and destructive: deselecting ETO_P made the
+    manager offer to unsubscribe from the item, which would have deleted ETO_B,
+    the variant explicitly kept, while the confirmation screen listed only
+    ETO_P. The tool would have destroyed something you told it to keep.
+    """
+    from pzmodmanager.selection import unsubscribe_plan
+
+    refs = [
+        sel.ModRef(mod_id="ETO_B", name="Well Balanced", workshop_id="3119788162"),
+        sel.ModRef(mod_id="ETO_P", name="Max Performance", workshop_id="3119788162"),
+        sel.ModRef(mod_id="Solo", name="Solo", workshop_id="999"),
+        sel.ModRef(mod_id="Local", name="Local", workshop_id=None),
+    ]
+    by_key = sel.index_by_key(refs)
+
+    safe, held = unsubscribe_plan(by_key, {"eto_b", "local"})
+    check([t.workshop_id for t in safe] == ["999"],
+          "multi mod: only the item with nothing kept can be unsubscribed")
+    check(len(held) == 1 and held[0].workshop_id == "3119788162",
+          "multi mod: the shared item is held back")
+    check(held[0].keeping == ["ETO_B"] and held[0].dropping == ["ETO_P"],
+          "multi mod: and it says which half you kept and which you dropped")
+    kept_ids = {r.workshop_id for k, r in by_key.items() if k in {"eto_b", "local"}}
+    check(not (kept_ids & {t.workshop_id for t in safe}),
+          "multi mod: no mod you kept can be removed by what would be unsubscribed")
+
+    safe, held = unsubscribe_plan(by_key, {"local"})
+    check(sorted(t.workshop_id for t in safe) == ["3119788162", "999"],
+          "multi mod: dropping every variant releases the whole item")
+    check(safe[0].mod_ids == ["ETO_B", "ETO_P"],
+          "multi mod: and the confirmation names both mods it would remove")
+    check(not held, "multi mod: nothing is held back then")
+
+    safe, held = unsubscribe_plan(by_key, set(by_key))
+    check(not safe and not held,
+          "multi mod: keeping everything unsubscribes from nothing")
+
+    # A mod installed by hand has no item behind it and must never appear.
+    check(all(t.workshop_id for t in unsubscribe_plan(by_key, set())[0]),
+          "multi mod: a hand installed mod is never an unsubscribe target")
+
+    # The scanner has to see both mods in the first place.
+    from pzmodmanager.steam import mod_ids_in_description
+
+    found = mod_ids_in_description(
+        "Workshop ID: 3119788162\nMod ID: ETO_B\nMod ID: ETO_P\n"
+    )
+    check(found == ["ETO_B", "ETO_P"],
+          "multi mod: several Mod ID lines are all read from the description")
+
+
+def _unsubscribe_screen_with(mods):
+    """An unsubscribe screen showing both a target and a held back item."""
+    from pzmodmanager.unsubscribe_screen import UnsubscribeScreen
+
+    by_key = sel.index_by_key(mods)
+    all_dropped, _ = sel.unsubscribe_plan(by_key, set())
+    _, held = sel.unsubscribe_plan(by_key, {mods[-1].key})
+    return lambda: UnsubscribeScreen(all_dropped, Path("/tmp/none"), held=held)
+
+
+def test_hostile_text_everywhere() -> None:
+    """Every screen, fed text full of square brackets, must survive.
+
+    This bug class has now bitten three times, in three disguises, and each
+    disguise looked like a different bug:
+
+      * a ticked row rendered as nothing, because "[x]" is a valid style tag
+        and Rich swallowed it silently;
+      * a Workshop description took the whole screen down with a MarkupError,
+        because Steam descriptions are full of BBCode like [B]...[/B];
+      * a mod named with brackets crashed the table itself, because DataTable
+        runs plain strings through Text.from_markup inside its own drawing.
+
+    Two widgets parse markup and they look nothing alike in the code, so the
+    fix is at the widget rather than at each of the hundred call sites: Plain
+    for every Static, cell() for every table cell. This test is what keeps that
+    true, by driving all six screens with text designed to break them.
+    """
+    import asyncio
+
+    from pzmodmanager.browse_screen import BrowseScreen, SubscribeScreen
+    from pzmodmanager.manager_screen import ManageScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.settings_screen import SettingsScreen
+    from pzmodmanager.steam import WorkshopItem
+    from pzmodmanager.tui import ModCheckApp, Plain, ResultsScreen, cell
+    from pzmodmanager.unsubscribe_screen import UnsubscribeScreen
+
+    from rich.text import Text
+    from textual.widgets import Static
+
+    check(issubclass(Plain, Static), "markup: Plain is a Static, so queries still match")
+    check(isinstance(cell("[x]"), Text), "markup: cell() hands back a Text object")
+    check(str(cell("[B]bold[/B]")) == "[B]bold[/B]",
+          "markup: and the brackets survive it intact")
+
+    # No Static may be built raw: the whole point is that no call site has to
+    # remember. Reading the source is the only way to check the rule holds.
+    import re
+
+    for name in ("tui", "browse_screen", "manager_screen",
+                 "settings_screen", "unsubscribe_screen"):
+        module = __import__(f"pzmodmanager.{name}", fromlist=["x"])
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        raw = re.findall(r"(?<![\w.])Static\((?!\s*\))", source)
+        check(not raw, f"markup: {name}.py builds no bare Static ({len(raw)} found)")
+        # Markup written into a string is the other half of the same mistake:
+        # with parsing off it shows as literal "[b]" on screen, which is how
+        # the manager's headings started printing their own tags. Read the
+        # syntax tree rather than the raw text, so an index like found[i] and a
+        # docstring explaining this rule are not mistaken for style tags.
+        import ast
+
+        tree = ast.parse(source)
+        docstrings = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr):
+                if isinstance(body[0].value, ast.Constant):
+                    docstrings.add(id(body[0].value))
+        tags: list[str] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                tags += re.findall(r"\[/?(?:b|i|dim|bold|red|green|yellow)\]", node.value)
+        check(not tags, f"markup: {name}.py spells no style tags into text ({tags[:3]})")
+
+    BAD = "[B]bold[/B] [unclosed [/] [] [x] [#f00] [/color]"
+    mods = [
+        sel.ModRef(mod_id="Mod[1]", name=BAD, workshop_id="111",
+                   requires=["[dep]"], incompatible=[BAD]),
+        sel.ModRef(mod_id="Plain", name="Plain", workshop_id="222"),
+    ]
+    finding = Finding(rule="r", severity=Severity.HIGH, title=BAD, detail=BAD,
+                      mods=["Mod[1]"], evidence=[BAD], advice=BAD)
+    items = [
+        WorkshopItem(workshop_id="1", title=BAD, description=BAD, tags=["Build 42"]),
+        WorkshopItem(workshop_id="2", title="[/]", description="[not closed", tags=[]),
+    ]
+
+    async def drive(make) -> str:
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        try:
+            async with app.run_test(size=(120, 44)) as pilot:
+                screen = make()
+                await app.push_screen(screen)
+                await pilot.pause()
+                if isinstance(screen, BrowseScreen):
+                    screen.lookup_finished(items, [], {})
+                    await pilot.pause()
+                for _ in range(4):
+                    await pilot.press("down")
+                    await pilot.pause()
+                for key in ("x", "space"):
+                    await pilot.press(key)
+                    await pilot.pause()
+            return ""
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+
+    screens = [
+        ("Add mods", lambda: BrowseScreen(installed_mods=mods, build="42")),
+        ("the manager", lambda: ManageScreen(mods, [finding])),
+        ("the results", lambda: ResultsScreen(
+            store.StoredScan(mods=mods, findings=[finding], mod_count=2))),
+        ("settings", lambda: SettingsScreen(Settings(steam_sdk="C:\\a [b]\\c"))),
+        ("subscribe", lambda: SubscribeScreen(items, Path("/tmp/none"))),
+        ("unsubscribe", _unsubscribe_screen_with(mods)),
+    ]
+    for label, make in screens:
+        failure = asyncio.run(drive(make))
+        check(not failure, f"markup: {label} survives text full of brackets ({failure})")
+
+
 def test_menu_greying() -> None:
     """An entry is offered only when there is something behind it.
 
@@ -1020,6 +1580,14 @@ def main() -> int:
         test_steam_bridge(tmp)
         test_workshop_input()
         test_browse_screen()
+        test_mixed_layout(tmp)
+        test_dependency_typo()
+        test_problem_filter()
+        test_toggle_keeps_the_view_still()
+        test_one_dependency_resolver()
+        test_validate_knows_typos()
+        test_multi_mod_items()
+        test_hostile_text_everywhere()
         test_menu_greying()
         test_reset_actions(tmp)
         test_browse_concerns()

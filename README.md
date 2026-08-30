@@ -279,6 +279,7 @@ under a colour scheme that remaps the palette.
 | 1 to 5 | show only one severity |
 | 0 | show everything again |
 | R | open the HTML report |
+| `h` | hide the minor problems, cycling: everything, hiding low, critical only |
 | ESC | back to the menu |
 | Q | quit |
 
@@ -328,10 +329,20 @@ what would break if you dropped it, and its Workshop link:
 | d | pull in every missing dependency |
 | w | open this mod's Workshop page in Steam |
 | e | export the selection |
+| h | hide the minor problems: everything, hiding low, critical only |
 | u | unsubscribe the deselected mods from Steam, after confirmation |
 | ESC | back to the menu |
 
 #### B. Selecting and deselecting
+
+A large mod set produces a lot of `low` findings, most of them typos in other
+people's `mod.info`, and a dozen of those bury the one critical that actually
+stops the game loading. `h` cycles the problems panel through everything, hiding
+low, and critical only. The `!` in the list follows it, since that marker means
+"involved in a problem" and has to mean the problems you are looking at: with
+every mod flagged by a low typo, two hundred exclamation marks say nothing at
+all. It hides rows, never facts: the footer keeps counting every problem by
+severity whatever the panel shows.
 
 **Selecting a mod pulls in its dependencies automatically**, transitively, and
 says which ones it added. **Deselecting** never removes anything else: it tells
@@ -516,7 +527,43 @@ The real dependency and conflict graph is only knowable once `mod.info` is on
 disk, which is after the download. This is the part that can be known before, and
 a Build 41 mod or a duplicate id is exactly what you want caught beforehand.
 
-#### C. Searching by name, and why it goes through Steam
+#### C. One item, several mods
+
+A Workshop item and a mod are not the same thing, and the difference matters
+more than it looks. "42.20 | Every Texture Optimized" installs two mods, `ETO_B`
+and `ETO_P`, two variants meant to be used one at a time. Plenty of items do
+this.
+
+**Enabling is per mod. Subscribing is per item.** You subscribe to the item once
+and then tick the mods you want in the manager, which is why the exported
+`WorkshopItems=` line carries the id once while `Mods=` names only the variant
+you chose.
+
+**Unsubscribing is per item too, and Steam cannot remove part of one.** So the
+manager will not unsubscribe from an item that still holds a mod you kept. If
+you drop `ETO_P` but keep `ETO_B`, the confirmation screen says so plainly and
+leaves the item alone:
+
+```
+  NOT UNSUBSCRIBED, because you kept part of them
+
+  Workshop 3119788162
+    you dropped  ETO_P
+    you kept     ETO_B
+
+  Steam cannot remove part of a Workshop item. Unsubscribing from
+  one of these would delete the mods you kept as well, so they are
+  left alone. Deselecting is enough: the game will not load them.
+```
+
+Deselecting is all you need: the game only loads what `Mods=` names. Dropping
+every mod an item installs releases the whole item, and then it is offered.
+
+The Add mods screen says when an item claims more than one mod id, because
+finding out after the download that you have installed two conflicting variants
+is a poor way to learn it.
+
+#### D. Searching by name, and why it goes through Steam
 
 Type a name instead of an id and press ENTER. The box decides which of the two
 you meant: text with an id in it is looked up, text without one is searched for.

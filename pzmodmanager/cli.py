@@ -602,6 +602,7 @@ def _confirm_unsubscribe(console, targets: list[tuple[str, str]], assume_yes: bo
 
 def run_unsubscribe(args, by_key, selected: set[str], console) -> int:
     """Resolve what to unsubscribe, confirm once, then do it and verify."""
+    from .selection import unsubscribe_plan
     from .steambridge import unsubscribe as bridge_unsubscribe
     from .steamsdk import find_library
 
@@ -626,9 +627,31 @@ def run_unsubscribe(args, by_key, selected: set[str], console) -> int:
             add(ref)
 
     if args.unsubscribe_unselected:
-        for key, ref in by_key.items():
-            if key not in selected:
-                add(ref)
+        # Per Workshop item, not per mod: an item also holding a mod you kept
+        # cannot be removed without taking that mod with it.
+        safe, held = unsubscribe_plan(by_key, selected)
+        for item in safe:
+            entry = (item.label, item.workshop_id)
+            if entry not in targets:
+                targets.append(entry)
+        for item in held:
+            console.print(
+                f"[yellow]Keeping Workshop {item.workshop_id}: you dropped "
+                f"{', '.join(item.dropping)} but kept {', '.join(item.keeping)}, "
+                "and Steam cannot remove part of an item.[/yellow]"
+            )
+
+    for mod_id, workshop_id in list(targets):
+        sharing = sorted(
+            r.mod_id for r in by_key.values()
+            if r.workshop_id == workshop_id and r.mod_id != mod_id
+        )
+        if sharing:
+            console.print(
+                f"[yellow]Workshop {workshop_id} also installs {', '.join(sharing)}. "
+                "Unsubscribing removes those too: Steam cannot remove part of an "
+                "item.[/yellow]"
+            )
 
     for name in unknown:
         console.print(f"[red]Unknown mod, cannot unsubscribe: {name}[/red]")

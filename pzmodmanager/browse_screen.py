@@ -58,7 +58,7 @@ from .steam import (
     requires_in_description,
     search_url,
 )
-from .tui import RETRO_CSS
+from .tui import RETRO_CSS, Plain, cell
 
 _BROWSE_CSS = """
 #browse-body {
@@ -266,7 +266,7 @@ class BrowseScreen(Screen):
     # ------------------------------------------------------------------ view --
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "Type in the box and press ENTER: an id or link is looked up, "
             "anything else is searched for on Steam\n"
             "'x' or SPACE marks, 'a' adds the marked ones, 'w' opens the page, "
@@ -280,11 +280,11 @@ class BrowseScreen(Screen):
         with Horizontal(id="browse-body"):
             yield DataTable(id="results", cursor_type="row", zebra_stripes=False)
             yield VerticalScroll(
-                Static("", id="detail-image"),
-                Static("", id="detail-text"),
+                Plain("", id="detail-image"),
+                Plain("", id="detail-text"),
                 id="detail",
             )
-        yield Static("", id="footer")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         table = self.query_one("#results", DataTable)
@@ -395,10 +395,10 @@ class BrowseScreen(Screen):
             flag = {"conflict": "! ", "warning": ". "}.get(self.worst(item), "  ")
             title = item.title or "(no title returned)"
             table.add_row(
-                mark,
-                Text(flag + title[:38]),
-                item.workshop_id,
-                self.status_of(item),
+                cell(mark),
+                cell(flag + title[:38]),
+                cell(item.workshop_id),
+                cell(self.status_of(item)),
                 key=item.workshop_id,
             )
         if self.results:
@@ -520,6 +520,13 @@ class BrowseScreen(Screen):
                 } else ""
                 lines.append(f"      {name}{already}")
             lines.append("")
+            if len(claimed) > 1:
+                lines.append(f"    This one item installs {len(claimed)} separate mods.")
+                lines.append("    You subscribe to the item as a whole, then enable the")
+                lines.append("    ones you want in the manager. Several are often")
+                lines.append("    variants meant to be used one at a time, so read the")
+                lines.append("    page before enabling them all.")
+                lines.append("")
             lines.append("    Written by the author by hand, so treat it as a hint.")
             lines.append("    The real ids are read from mod.info after downloading.")
             lines.append("")
@@ -740,32 +747,32 @@ class SubscribeScreen(Screen):
         self.library = library
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "Arrow keys to choose, ENTER to act, ESC to go back without changing anything",
             id="hint",
         )
         if self.library is None:
-            yield Static("STEAM LIBRARY NOT FOUND", id="headline")
-            yield Static(
+            yield Plain("STEAM LIBRARY NOT FOUND", id="headline")
+            yield Plain(
                 "Subscribing goes through the Steam client, so it needs the SDK.",
                 id="subhead",
             )
-            yield VerticalScroll(Static(self._missing_body(), id="list"), id="listbox")
+            yield VerticalScroll(Plain(self._missing_body(), id="list"), id="listbox")
         else:
             count = len(self.targets)
-            yield Static(
+            yield Plain(
                 f"SUBSCRIBE TO {count} WORKSHOP ITEM{'S' if count > 1 else ''}",
                 id="headline",
             )
-            yield Static(
+            yield Plain(
                 "Added to the Steam account currently logged in.", id="subhead"
             )
-            yield VerticalScroll(Static(self._list_body(), id="list"), id="listbox")
+            yield VerticalScroll(Plain(self._list_body(), id="list"), id="listbox")
 
         with Container(id="choice-area"):
             with Container(id="choice-box"):
                 yield OptionList(id="choice")
-        yield Static("", id="footer")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         choice = self.query_one("#choice", OptionList)
@@ -853,11 +860,11 @@ class SubscribeRunScreen(Screen):
         self.scan_next = False
 
     def compose(self) -> ComposeResult:
-        yield Static("Talking to Steam. Do not close Steam while this runs.", id="hint")
-        yield Static("SUBSCRIBING", id="headline")
-        yield Static(f"{len(self.targets)} item(s)", id="subhead")
+        yield Plain("Talking to Steam. Do not close Steam while this runs.", id="hint")
+        yield Plain("SUBSCRIBING", id="headline")
+        yield Plain(f"{len(self.targets)} item(s)", id="subhead")
         yield RichLog(id="progress", wrap=True, markup=False, highlight=False)
-        yield Static("", id="footer")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         self.run_worker_job()

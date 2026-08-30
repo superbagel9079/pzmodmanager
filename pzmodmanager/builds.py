@@ -107,9 +107,24 @@ def select_branch(names: list[str], target: str) -> tuple[str | None, str | None
 
 
 def classify_layout(subdir_names: list[str], has_mod_info: bool) -> str:
-    """Say which layout a mod folder uses: 'flat', 'versioned' or 'unknown'."""
+    """Say which layout a mod folder uses.
+
+    Four answers, not three. The one that was missing is 'mixed': a folder with
+    a mod.info at the top AND version subfolders that each have their own. That
+    is one mod supporting both builds from a single folder, and the two files
+    can declare different ids on purpose.
+
+    Hot Brass is the case that taught this. Its root mod.info says id=zHBVCEF,
+    the Build 41 name, while 42.15/mod.info says id=HBVCEFb42. Reading the root
+    because it exists reported the Build 41 id on a Build 42 machine, so the
+    mod that requires HBVCEFb42 was told its dependency was not installed, when
+    it was sitting in the same Workshop item.
+    """
+    versioned = any(is_version_dir(name) for name in subdir_names)
+    if has_mod_info and versioned:
+        return "mixed"
     if has_mod_info:
         return "flat"
-    if any(is_version_dir(name) for name in subdir_names):
+    if versioned:
         return "versioned"
     return "unknown"

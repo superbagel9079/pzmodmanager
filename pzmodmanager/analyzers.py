@@ -16,6 +16,7 @@ from .assets import classify
 from .loadorder import LoadOrder
 from .models import Finding, Mod, Severity
 from .scripts import SIGNIFICANT_KINDS
+from .selection import probable_typo
 from .steam import stated_incompatibilities
 
 log = logging.getLogger(__name__)
@@ -120,16 +121,47 @@ def rule_missing_dependencies(ctx: AnalysisContext) -> list[Finding]:
         missing = [r for r in mod.requires if r.strip().lower() not in ctx.by_key]
         if not missing:
             continue
+        typos = {r: probable_typo(r, ctx.by_key) for r in missing}
+        matched = {r: name for r, name in typos.items() if name}
+        # A require= line that only needs punctuation stripped to match an
+        # installed mod is a typo in the mod, not a mod you are missing.
+        if matched and len(matched) == len(missing):
+            pairs = ", ".join(f"{r} -> {name}" for r, name in matched.items())
+            findings.append(
+                Finding(
+                    rule="dependency_typo",
+                    severity=Severity.LOW,
+                    title=f"{mod.name}: a typo in its own require= line",
+                    detail=(
+                        f"The mod declares require={', '.join(missing)}, which matches "
+                        f"nothing installed. Stripping stray punctuation gives {pairs}, "
+                        "and that is installed. The mod author typed this, so the game "
+                        "sees the same broken id and will report the dependency as "
+                        "missing at load time even though the mod is there."
+                    ),
+                    mods=[mod.mod_id],
+                    evidence=missing,
+                    advice=(
+                        "Nothing to install. Report it to the mod author, or fix the "
+                        "require= line in its mod.info yourself if it bothers the game."
+                    ),
+                )
+            )
+            continue
+        detail = (
+            f"The mod declares require={', '.join(missing)} but no installed mod "
+            "carries that id. Depending on the mod this ranges from a harmless "
+            "warning at load time to a blocking Lua error."
+        )
+        if matched:
+            pairs = ", ".join(f"{r} looks like {name}" for r, name in matched.items())
+            detail += f" Some of these look like typos in the mod's own file: {pairs}."
         findings.append(
             Finding(
                 rule="missing_dependency",
                 severity=Severity.CRITICAL,
                 title=f"{mod.name}: dependency not found",
-                detail=(
-                    f"The mod declares require={', '.join(missing)} but no installed mod "
-                    "carries that id. Depending on the mod this ranges from a harmless "
-                    "warning at load time to a blocking Lua error."
-                ),
+                detail=detail,
                 mods=[mod.mod_id],
                 evidence=missing,
                 advice="Subscribe to the missing mod, or check it has not been pulled from the Workshop.",

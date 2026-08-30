@@ -21,8 +21,8 @@ from textual.screen import Screen
 from textual.widgets import OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
-from .selection import ModRef
-from .tui import RETRO_CSS
+from .selection import ItemHeldBack, ItemToDrop
+from .tui import RETRO_CSS, Plain
 
 _SCREEN_CSS = """
 #headline {
@@ -106,42 +106,53 @@ class UnsubscribeScreen(Screen):
         Binding("q,Q", "cancel", "Cancel"),
     ]
 
-    def __init__(self, targets: list[ModRef], library: Path | None) -> None:
+    def __init__(
+        self,
+        targets: list[ItemToDrop],
+        library: Path | None,
+        held: list[ItemHeldBack] | None = None,
+    ) -> None:
         super().__init__()
+        # One entry per Workshop ITEM, not per mod. Steam cannot remove part of
+        # an item, so an item holding a mod you kept is not a target at all.
         self.targets = targets
+        self.held = list(held or [])
         self.library = library
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "Arrow keys to choose, ENTER to act, ESC to go back without changing anything",
             id="hint",
         )
         if self.library is None:
-            yield Static("STEAM LIBRARY NOT FOUND", id="headline")
-            yield Static(
+            yield Plain("STEAM LIBRARY NOT FOUND", id="headline")
+            yield Plain(
                 "Nothing can be unsubscribed until the Steamworks SDK is in place.",
                 id="subhead",
             )
-            yield VerticalScroll(Static(self._missing_body(), id="list"), id="listbox")
-            yield Static("", id="warning")
+            yield VerticalScroll(Plain(self._missing_body(), id="list"), id="listbox")
+            yield Plain("", id="warning")
         else:
             count = len(self.targets)
-            yield Static(
-                f"UNSUBSCRIBE {count} MOD{'S' if count > 1 else ''} FROM STEAM",
+            mods = sum(len(t.mod_ids) for t in self.targets)
+            yield Plain(
+                f"UNSUBSCRIBE {count} WORKSHOP ITEM{'S' if count != 1 else ''} "
+                f"FROM STEAM",
                 id="headline",
             )
-            yield Static(
-                f"Every deselected mod that came from the Workshop. "
-                f"Steam ID currently logged in decides whose account this touches.",
+            extra = f", holding {mods} mods" if mods != count else ""
+            yield Plain(
+                f"{count} item(s){extra}. The Steam account currently logged in "
+                "is the one this touches.",
                 id="subhead",
             )
-            yield VerticalScroll(Static(self._list_body(), id="list"), id="listbox")
-            yield Static(self._warning_body(), id="warning")
+            yield VerticalScroll(Plain(self._list_body(), id="list"), id="listbox")
+            yield Plain(self._warning_body(), id="warning")
 
         with Container(id="choice-area"):
             with Container(id="choice-box"):
                 yield OptionList(id="choice")
-        yield Static("", id="footer")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         choice = self.query_one("#choice", OptionList)
@@ -154,7 +165,7 @@ class UnsubscribeScreen(Screen):
                     # Cancel first and highlighted: the dangerous option should
                     # never be the one a stray Enter lands on.
                     Option("  Cancel, change nothing  ".center(30), id="cancel"),
-                    Option(f"  Unsubscribe {count} mod(s)  ".center(30), id="go"),
+                    Option(f"  Unsubscribe {count} item(s)  ".center(30), id="go"),
                 ]
             )
         choice.highlighted = 0
@@ -165,9 +176,24 @@ class UnsubscribeScreen(Screen):
 
     def _list_body(self) -> str:
         lines = [""]
-        width = max((len(r.mod_id) for r in self.targets), default=10)
-        for ref in self.targets:
-            lines.append(f"  {ref.mod_id.ljust(width)}   Workshop {ref.workshop_id}")
+        width = max((len(t.label) for t in self.targets), default=10)
+        for item in self.targets:
+            note = f"  ({len(item.mod_ids)} mods in one item)" if len(item.mod_ids) > 1 else ""
+            lines.append(
+                f"  {item.label.ljust(width)}   Workshop {item.workshop_id}{note}"
+            )
+        if self.held:
+            lines += ["", "  NOT UNSUBSCRIBED, because you kept part of them", ""]
+            for item in self.held:
+                lines.append(f"  Workshop {item.workshop_id}")
+                lines.append(f"    you dropped  {', '.join(item.dropping)}")
+                lines.append(f"    you kept     {', '.join(item.keeping)}")
+            lines += [
+                "",
+                "  Steam cannot remove part of a Workshop item. Unsubscribing from",
+                "  one of these would delete the mods you kept as well, so they are",
+                "  left alone. Deselecting is enough: the game will not load them.",
+            ]
         lines.append("")
         return "\n".join(lines)
 
@@ -226,18 +252,18 @@ class UnsubscribeRunScreen(Screen):
 
     BINDINGS = [Binding("escape", "back", "Back"), Binding("q,Q", "back", "Back")]
 
-    def __init__(self, targets: list[ModRef], library: Path) -> None:
+    def __init__(self, targets: list[ItemToDrop], library: Path) -> None:
         super().__init__()
         self.targets = targets
         self.library = library
         self.finished = False
 
     def compose(self) -> ComposeResult:
-        yield Static("Talking to Steam. Do not close Steam while this runs.", id="hint")
-        yield Static("UNSUBSCRIBING", id="headline")
-        yield Static(f"{len(self.targets)} item(s)", id="subhead")
+        yield Plain("Talking to Steam. Do not close Steam while this runs.", id="hint")
+        yield Plain("UNSUBSCRIBING", id="headline")
+        yield Plain(f"{len(self.targets)} item(s)", id="subhead")
         yield RichLog(id="progress", wrap=True, markup=False, highlight=False)
-        yield Static("", id="footer")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         self.run_worker_job()
@@ -261,7 +287,7 @@ class UnsubscribeRunScreen(Screen):
             app.call_from_thread(self.append, f"  {message}")
 
         answer = unsubscribe(
-            self.library, [int(r.workshop_id) for r in self.targets], progress=progress
+            self.library, [int(t.workshop_id) for t in self.targets], progress=progress
         )
         if not answer.usable:
             app.call_from_thread(self.finish_with_error, answer.error)
@@ -275,7 +301,7 @@ class UnsubscribeRunScreen(Screen):
         )
 
     def finish(self, done: list[int], failed: list[int], before: int, after: int) -> None:
-        names = {str(r.workshop_id): r.mod_id for r in self.targets}
+        names = {str(t.workshop_id): t.label for t in self.targets}
         self.append("")
         for item in done:
             self.append(f"  gone      {names.get(str(item), item)}")

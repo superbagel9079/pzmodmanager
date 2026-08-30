@@ -13,6 +13,8 @@ from __future__ import annotations
 import webbrowser
 from pathlib import Path
 
+from rich.text import Text
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -133,7 +135,57 @@ def _centered(lines: list[str]) -> str:
     return "\n".join(line.ljust(width) for line in lines)
 
 
-class BannerHeader(Static):
+def panel(lines: list[tuple[str, bool]]) -> Text:
+    """Build a block of text where some lines are bold, as styled Text.
+
+    The alternative, spelling "[b]...[/b]" into the string and letting the
+    widget parse it, only works while every other character on that panel is
+    also safe to parse. It never is: these panels print mod names, finding
+    titles and Workshop text, and a mod called "[41/42.20MP] Hot Brass" is a
+    name, not markup. Emphasis belongs to the span, not to the string.
+    """
+    text = Text()
+    for index, (line, bold) in enumerate(lines):
+        if index:
+            text.append("\n")
+        text.append(line, style="bold" if bold else "")
+    return text
+
+
+def cell(value) -> Text:
+    """Anything on its way into a table cell.
+
+    DataTable has the same trap as Static and it is easy to miss, because the
+    two look nothing alike in the code: a plain string handed to add_row goes
+    through Text.from_markup, so a mod named "Brackets [in] the title" raises a
+    MarkupError from inside the table's own drawing code. Text objects are
+    passed through untouched, so nothing reaches a cell as a str.
+    """
+    return value if isinstance(value, Text) else Text("" if value is None else str(value))
+
+
+class Plain(Static):
+    """A Static that never reads its content as markup.
+
+    Nothing this interface shows is markup. What it shows is its own literal
+    text, or text that came from a mod or from the Workshop, and that second
+    kind is full of square brackets: Steam descriptions carry BBCode like
+    [B]...[/B], mod ids and Windows paths have brackets in them, and a checkbox
+    is literally [x]. Textual reads every one of those as a style tag. The
+    failures are not subtle in the same way twice, which is what made this
+    costly: [x] silently rendered as nothing, while a Workshop description took
+    the whole screen down with a MarkupError.
+
+    So the rule is the widget, not the caller: no Static here parses markup, and
+    no future line of text has to remember to escape itself.
+    """
+
+    def __init__(self, content="", **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(content, **kwargs)
+
+
+class BannerHeader(Plain):
     """The ASCII title, centred as a block rather than line by line."""
 
     def __init__(self) -> None:
@@ -196,16 +248,16 @@ class MenuScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "Use arrow keys to move, ENTER to select\nPress 'q' to quit",
             id="hint",
         )
         yield Container(BannerHeader(), id="bannerbox")
-        yield Static(AUTHOR, id="author")
+        yield Plain(AUTHOR, id="author")
         with Container(id="menu-area"):
             with Container(id="menu-box"):
                 yield OptionList(id="menu")
-        yield Static("mod compatibility checker for Project Zomboid", id="footer")
+        yield Plain("mod compatibility checker for Project Zomboid", id="footer")
 
     def on_mount(self) -> None:
         self.query_one("#bannerbox", Container).styles.align_horizontal = "center"
@@ -348,11 +400,11 @@ class ScanScreen(Screen):
         self.then = then
 
     def compose(self) -> ComposeResult:
-        yield Static("Scanning. This can take a moment on a large mod set.", id="hint")
+        yield Plain("Scanning. This can take a moment on a large mod set.", id="hint")
         with Container(id="scan-area"):
-            yield Static("SCAN IN PROGRESS", id="scan-title")
+            yield Plain("SCAN IN PROGRESS", id="scan-title")
             yield Log(id="progress", highlight=False)
-        yield Static("ESC to go back to the menu", id="footer")
+        yield Plain("ESC to go back to the menu", id="footer")
 
     def on_mount(self) -> None:
         self.run_scan_worker()
@@ -495,16 +547,16 @@ class ResultsScreen(Screen):
         self.rows: list[Finding] = []
 
     def compose(self) -> ComposeResult:
-        yield Static(
+        yield Plain(
             "Arrow keys to move, 1-5 to filter by severity, 0 for all\n"
             "'r' opens the HTML report, 'm' manages the mods, ESC returns to the menu",
             id="hint",
         )
-        yield Static("", id="summary")
+        yield Plain("", id="summary")
         with Horizontal(id="body"):
             yield DataTable(id="list", cursor_type="row", zebra_stripes=False)
-            yield VerticalScroll(Static("", id="detail"), id="detailbox")
-        yield Static("", id="footer")
+            yield VerticalScroll(Plain("", id="detail"), id="detailbox")
+        yield Plain("", id="footer")
 
     def on_mount(self) -> None:
         self.refresh_rows()
@@ -538,7 +590,9 @@ class ResultsScreen(Screen):
             if self.severity_filter is None or f.severity is self.severity_filter
         ]
         for index, finding in enumerate(self.rows):
-            table.add_row(MARKER[finding.severity], finding.title, key=str(index))
+            table.add_row(
+                cell(MARKER[finding.severity]), cell(finding.title), key=str(index)
+            )
         self.query_one("#summary", Static).update(self._summary())
         report = getattr(self.app, "report_written", None) or self.scan.report_path
         self.query_one("#footer", Static).update(
@@ -553,25 +607,26 @@ class ResultsScreen(Screen):
 
     def show_detail(self, finding: Finding) -> None:
         rule = "-" * 34
-        lines = [
-            "",
-            f"{MARKER[finding.severity]}  {finding.severity.label.upper()}",
-            f"[b]{finding.title}[/b]",
-            rule,
-            "",
-            finding.detail,
-            "",
-            f"[b]Rule[/b]   {finding.rule}",
-            f"[b]Mods[/b]   {', '.join(dict.fromkeys(finding.mods)) or '-'}",
+        lines: list[tuple[str, bool]] = [
+            ("", False),
+            (f"{MARKER[finding.severity]}  {finding.severity.label.upper()}", False),
+            (finding.title, True),
+            (rule, False),
+            ("", False),
+            (finding.detail, False),
+            ("", False),
+            (f"Rule   {finding.rule}", False),
+            (f"Mods   {', '.join(dict.fromkeys(finding.mods)) or '-'}", False),
         ]
         if finding.winner:
-            lines.append(f"[b]Wins[/b]   {finding.winner}")
+            lines.append((f"Wins   {finding.winner}", False))
         if finding.advice:
-            lines += ["", rule, "", finding.advice]
+            lines += [("", False), (rule, False), ("", False), (finding.advice, False)]
         if finding.evidence:
-            lines += ["", rule, "", f"[b]{len(finding.evidence)} item(s)[/b]", ""]
-            lines += [f"  {item}" for item in finding.evidence]
-        self.query_one("#detail", Static).update("\n".join(lines))
+            lines += [("", False), (rule, False), ("", False),
+                      (f"{len(finding.evidence)} item(s)", True), ("", False)]
+            lines += [(f"  {item}", False) for item in finding.evidence]
+        self.query_one("#detail", Static).update(panel(lines))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         try:
