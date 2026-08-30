@@ -859,6 +859,146 @@ def test_order_view() -> None:
           "order view: pressing it again goes back to alphabetical")
 
 
+def test_game_log(tmp: Path) -> None:
+    """Reading what the game recorded, instead of only predicting it.
+
+    Everything else in the tool is a prediction from mod.info on disk. The game
+    writes down the order it really used and the winner of every contested file:
+
+        LOG  : Mod          f:0> loading ETO_B
+        LOG  : Mod          f:0> mod "ETO_B" overrides media/textures/x.png
+
+    That closes the loop, and it answers the one question nothing else can: a
+    mod quietly losing its files to a later one produces no error and nothing on
+    screen. On a real 246 mod session this found 976 contested files and one mod
+    that had lost 555 of them.
+
+    The shapes below are copied from a real console.txt, spacing included,
+    because that spacing is what the patterns match on.
+    """
+    from pzmodmanager import gamelog
+
+    text = "\n".join([
+        "LOG  : General      f:0> Loading Mods",
+        "LOG  : Mod          f:0> loading AlicesMultiWear",
+        'LOG  : Mod          f:0> mod "AlicesMultiWear" overrides media/textures/bag.png',
+        'LOG  : Mod          f:0> mod "AlicesMultiWear" overrides media/textures/hat.png',
+        "LOG  : Mod          f:0> loading ETO_B",
+        'LOG  : Mod          f:0> mod "ETO_B" overrides media/textures/bag.png',
+        "LOG  : Mod          f:0> loading Quiet",
+        "LOG  : General      f:0> Loading Scripts",
+        'LOG  : General      f:0> ERROR: template "DAMN85stepVan" not found B',
+        'LOG  : General      f:0> ERROR: template "DAMN86fordE150" not found B',
+        'ERROR: General      f:0 at ImportedSkeleton.collectBoneFrames  > '
+        'Could not find bone index for node name: "Bip01_HeadNub"',
+        'ERROR: General      f:0 at ImportedSkeleton.collectBoneFrames  > '
+        'Could not find bone index for node name: "Bip01_L_Toe0Nub"',
+    ])
+    record = gamelog.parse(text, source="console.txt")
+
+    check(record.loaded == ["AlicesMultiWear", "ETO_B", "Quiet"],
+          f"log: the load order is read in order (got {record.loaded})")
+    check(record.override_count == 3,
+          f"log: every override line is counted (got {record.override_count})")
+    check(len(record.contested) == 1 and record.contested[0].path.endswith("bag.png"),
+          "log: only the file two mods supply is contested")
+    check(record.contested[0].winner == "ETO_B",
+          "log: the winner is the one loaded last, which is how the game works")
+    check(record.contested[0].losers == ["AlicesMultiWear"],
+          "log: and the earlier one is recorded as losing it")
+    check(record.losses() == [("AlicesMultiWear", "ETO_B", 1)],
+          f"log: the loss is reported as a pair (got {record.losses()})")
+
+    # Two shapes, four lines. This grouping is the difference between a screen
+    # that says "7 problems" and one that says "6113 errors".
+    check(len(record.errors) == 2,
+          f"log: errors collapse to their shapes (got {len(record.errors)})")
+    check(record.error_total == 4, "log: while the true count is kept")
+    bones = next(g for g in record.errors if "bone" in g.shape)
+    check(bones.count == 2 and len(bones.subjects) == 2,
+          "log: with the varying part collected, so you can see what it is about")
+    check(bones.samples and "Bip01_HeadNub" in bones.samples[0],
+          "log: and a real line kept as an example")
+
+    # The comparison that matters: is the exported order the applied order?
+    check(record.disagreements(["AlicesMultiWear", "ETO_B", "Quiet"]) == [],
+          "log: an order that matches the game reports no disagreement")
+    moved = record.disagreements(["ETO_B", "AlicesMultiWear", "Quiet"])
+    check(len(moved) == 2,
+          f"log: a swapped pair is reported, both halves (got {moved})")
+    check(record.disagreements(["Ghost", "ETO_B"]) == [],
+          "log: a mod the log never saw is skipped rather than shifting the rest")
+
+    # It must survive a file that is not a game log at all.
+    empty = gamelog.parse("", source="x")
+    check(empty.loaded == [] and empty.errors == [] and empty.contested == [],
+          "log: an empty file parses to nothing rather than failing")
+    junk = gamelog.parse("hello\nERROR: something odd\n", source="x")
+    check(len(junk.errors) == 1, "log: a stray error line still groups")
+
+    missing = tmp / "nope" / "console.txt"
+    check(gamelog.read(missing) is None,
+          "log: a file that is not there returns nothing, and does not raise")
+
+    # And the screen, driven for real, including a log with brackets in it.
+    import asyncio
+
+    from textual.coordinate import Coordinate
+
+    from pzmodmanager.gamelog_screen import VIEWS, GameLogScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    hostile = tmp / "console.txt"
+    hostile.write_text(
+        text + "\n"
+        'LOG  : Mod          f:0> loading [B42]Bracket Mod\n'
+        'LOG  : Mod          f:0> mod "[B42]Bracket Mod" overrides media/textures/bag.png\n',
+        encoding="utf-8",
+    )
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = GameLogScreen(hostile, predicted=["AlicesMultiWear", "ETO_B"])
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+            table = screen.query_one("#log-table")
+            seen["views"] = {}
+            for name in VIEWS:
+                seen["views"][name] = [
+                    [table.get_cell_at(Coordinate(r, c)).plain
+                     for c in range(len(table.columns))]
+                    for r in range(min(4, table.row_count))
+                ]
+                await pilot.press("tab")
+                await pilot.pause()
+            seen["foot"] = screen.query_one("#log-foot").render().plain
+
+            # And with no log at all, which is the state on a machine that has
+            # never launched the game since installing this.
+            blank = GameLogScreen(tmp / "not-here.txt")
+            await app.push_screen(blank)
+            await pilot.pause()
+            seen["blank"] = blank.query_one("#log-notes").render().plain
+        return seen
+
+    shown = asyncio.run(run())
+    order_rows = shown["views"]["order"]
+    check(any("[B42]Bracket Mod" in row[1] for row in order_rows),
+          f"log: a mod id full of brackets is printed, not parsed (got {order_rows})")
+    check(shown["views"]["errors"][0][0] == "2",
+          f"log: the errors view leads with the commonest "
+          f"(got {shown['views']['errors'][0]})")
+    check(any("loses" not in r and r for r in shown["views"]["overrides"][0]),
+          "log: the overrides view has rows")
+    check("mod(s) loaded" in shown["foot"], "log: the footer counts the session")
+    check("NO GAME LOG" in shown["blank"],
+          "log: with no log it explains itself rather than showing an empty table")
+
+
 def test_order_pins(tmp: Path) -> None:
     """Ordering the user states by hand, because most of it is stated nowhere.
 
@@ -1009,6 +1149,20 @@ def test_order_pins(tmp: Path) -> None:
     check(shown["unmarked"] == set(), "pins: and pressing it again puts it back")
     check(shown["kept"] == [("Beta", "[b]Ghost[/b]")],
           f"pins: saving keeps exactly what was not marked (got {shown['kept']})")
+
+    # "before everything" and "after everything" are real instructions, and
+    # writing them as one pair per mod would be 240 lines that go stale the
+    # moment a mod is added. The anchor stands for the rest of the selection.
+    anchored = sel.topological_order(
+        by_key, keys, pins=[("Zeta", sel.EVERYTHING), (sel.EVERYTHING, "Alpha")]
+    )[0]
+    check(anchored[0] == "Zeta" and anchored[-1] == "Alpha",
+          f"pins: one anchor pin puts a mod first or last (got {anchored})")
+    check(sorted(anchored) == sorted(mods_ids := [m.mod_id for m in mods
+                                                 if m.key in keys]),
+          f"pins: and loses nothing on the way ({len(anchored)} of {len(mods_ids)})")
+    check(sel.pin_edges(by_key, keys, [(sel.EVERYTHING, sel.EVERYTHING)]) == [],
+          "pins: an anchor against itself asks for nothing and gets nothing")
 
     # And a loop that does get in anyway must be reported, not hidden.
     problems = sel.validate(by_key, keys, [], pins=[("Alpha", "Beta"), ("Beta", "Alpha")])
@@ -1175,6 +1329,89 @@ def test_one_dependency_resolver() -> None:
             )
             check(resolved == in_closure == in_panel and in_sort,
                   f"agree: all four say the same about {required!r}")
+
+
+def test_ids_are_clean_before_anything_compares_them(tmp: Path) -> None:
+    """The structural fix, and the reason it exists.
+
+    Five separate places compared a mod id that an author typed by hand. Four of
+    them remembered to see through a stray character and one did not, each time a
+    different one, and each miss was silent and looked like a brand new bug:
+
+      * the scan's rules called an installed library missing;
+      * the manager's panel repeated it after the scan was fixed;
+      * the dependency closure said "missing from disk" in the footer;
+      * the SORT built no edge at all, so damnlib loaded after the hundred
+        vehicles needing it, while the panel cheerfully said "order resolved";
+      * the INCOMPATIBILITY check reported two mods as fine when the game itself
+        refuses to load them together, which is the worst failure available: a
+        false all clear.
+
+    Remembering at each comparison is the thing that kept failing. So the
+    cleaning moved to the parser, and the invariant below is what a sixth site
+    now inherits for free: by the time anything can compare an id, there is
+    nothing left to see through.
+    """
+    from pzmodmanager.modinfo import build_mod, clean_mod_id
+
+    check(clean_mod_id("\\damnlib") == "damnlib", "clean: a leading backslash goes")
+    check(clean_mod_id('  "TombBodyTex" ') == "TombBodyTex", "clean: so do quotes")
+    check(clean_mod_id("[Ghost],") == "Ghost", "clean: brackets and trailing commas too")
+    check(clean_mod_id("") == "" and clean_mod_id("\\\\") == "",
+          "clean: junk on its own leaves nothing, rather than a phantom id")
+
+    folder = tmp / "hostile" / "NastyMod"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "mod.info").write_text(
+        "id=NastyMod\n"
+        "name=Nasty Mod\n"
+        "require=\\damnlib\n"
+        "require=  tsarslib  \n"
+        'incompatible="TombBodyTex";[TombBodyCustom],\n',
+        encoding="utf-8",
+    )
+    mod = build_mod(folder / "mod.info", "local", None)
+
+    check(mod.requires == ["damnlib", "tsarslib"],
+          f"clean: the parser hands out clean requirements (got {mod.requires})")
+    check(mod.incompatible == ["TombBodyTex", "TombBodyCustom"],
+          f"clean: and clean incompatibilities (got {mod.incompatible})")
+    check(mod.requires_raw == ["\\damnlib", "tsarslib"],
+          f"clean: while keeping what the author typed (got {mod.requires_raw})")
+
+    junk = set("\\/\"'`[](){}<>,;:")
+    for field_name in ("requires", "incompatible"):
+        for value in getattr(mod, field_name):
+            check(not (set(value) & junk) and value == value.strip(),
+                  f"clean: nothing in {field_name} carries junk ({value!r})")
+
+    # The whole point: a mod declaring incompatible=\Other must be reported
+    # against Other. This is the case the game refuses to run and the tool
+    # called fine, on a real machine, in a screenshot.
+    faces = sel.ModRef(mod_id="SPNCCFaces", incompatible_raw=["\\TombBodyTex"],
+                       incompatible=["TombBodyTex"])
+    tex = sel.ModRef(mod_id="TombBodyTex")
+    by_key = sel.index_by_key([faces, tex])
+    clashes = [
+        p for p in sel.validate(by_key, set(by_key), [])
+        if p.kind == "declared_incompatibility"
+    ]
+    check(len(clashes) == 1,
+          f"clean: a backslashed incompatible= is reported (got {len(clashes)})")
+    check(clashes[0].severity is Severity.CRITICAL,
+          "clean: as critical, because the game will not load the pair")
+
+    # And the scan's own rule, which is a different function over different data.
+    from pzmodmanager.analyzers import AnalysisContext, rule_declared_incompatibility
+    from pzmodmanager.models import Mod
+
+    a = Mod(mod_id="SPNCCFaces", name="Faces", root=folder,
+            incompatible=["TombBodyTex"], incompatible_raw=["\\TombBodyTex"])
+    b = Mod(mod_id="TombBodyTex", name="Tex", root=folder)
+    ctx = AnalysisContext(mods=[a, b])
+    found = rule_declared_incompatibility(ctx)
+    check(len(found) == 1 and "TombBodyTex" in found[0].evidence,
+          f"clean: the scan's rule agrees with the manager's (got {found})")
 
 
 def test_validate_knows_typos() -> None:
@@ -2008,9 +2245,11 @@ def main() -> int:
         test_toggle_keeps_the_view_still()
         test_order_hints()
         test_order_view()
+        test_game_log(tmp)
         test_order_pins(tmp)
         test_restore_scanned()
         test_one_dependency_resolver()
+        test_ids_are_clean_before_anything_compares_them(tmp)
         test_validate_knows_typos()
         test_multi_mod_items()
         test_hostile_text_everywhere()

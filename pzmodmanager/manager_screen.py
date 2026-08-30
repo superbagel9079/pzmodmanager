@@ -36,6 +36,7 @@ from .selection import (
     export_links,
     export_server_ini,
     export_text,
+    EVERYTHING,
     index_by_key,
     order_notes,
     pin_edges,
@@ -232,11 +233,19 @@ class PinsScreen(ModalScreen):
         missing = [
             mod_id
             for mod_id in (before, after)
-            if mod_id.strip().lower() not in self.by_key
+            if mod_id.strip() != EVERYTHING
+            and mod_id.strip().lower() not in self.by_key
         ]
         if missing:
             return f"not installed: {', '.join(missing)}"
+        if EVERYTHING in (before.strip(), after.strip()):
+            return "applies to the whole selection"
         return ""
+
+    @staticmethod
+    def label_for(mod_id: str) -> str:
+        """The anchor reads as words, not as a character nobody would guess."""
+        return "(everything else)" if mod_id.strip() == EVERYTHING else mod_id
 
     def redraw(self) -> None:
         table = self.query_one("#pins-table", DataTable)
@@ -245,7 +254,7 @@ class PinsScreen(ModalScreen):
         for index, (before, after) in enumerate(self.pins):
             mark = "[-]" if index in self.dropped else "   "
             table.add_row(
-                cell(mark), cell(before), cell(after),
+                cell(mark), cell(self.label_for(before)), cell(self.label_for(after)),
                 cell(self.status_of(before, after)),
             )
         if self.pins:

@@ -71,8 +71,12 @@ class ModRef:
     mod_id: str
     name: str = ""
     workshop_id: str | None = None
+    # Clean ids, normalised by the parser. Everything compares these.
     requires: list[str] = field(default_factory=list)
     incompatible: list[str] = field(default_factory=list)
+    # What the author typed. Only ever reported, never compared.
+    requires_raw: list[str] = field(default_factory=list)
+    incompatible_raw: list[str] = field(default_factory=list)
     source: str = ""
     was_enabled: bool = True
     order_index: int | None = None
@@ -110,6 +114,10 @@ class ModRef:
             workshop_id=mod.workshop_id,
             requires=list(mod.requires),
             incompatible=list(mod.incompatible),
+            requires_raw=list(getattr(mod, "requires_raw", None) or mod.requires),
+            incompatible_raw=list(
+                getattr(mod, "incompatible_raw", None) or mod.incompatible
+            ),
             source=mod.source,
             was_enabled=mod.enabled,
             order_index=mod.order_index,
@@ -124,6 +132,8 @@ class ModRef:
             "workshop_id": self.workshop_id,
             "requires": self.requires,
             "incompatible": self.incompatible,
+            "requires_raw": self.requires_raw,
+            "incompatible_raw": self.incompatible_raw,
             "source": self.source,
             "enabled": self.was_enabled,
             "order_index": self.order_index,
@@ -139,6 +149,13 @@ class ModRef:
             workshop_id=data.get("workshop_id"),
             requires=list(data.get("requires", [])),
             incompatible=list(data.get("incompatible", [])),
+            # A scan saved before the parser normalised ids has raw values in
+            # "requires". Falling back to them keeps that file readable, and
+            # resolve_requirement still sees through the stray characters.
+            requires_raw=list(data.get("requires_raw") or data.get("requires", [])),
+            incompatible_raw=list(
+                data.get("incompatible_raw") or data.get("incompatible", [])
+            ),
             source=data.get("source", ""),
             was_enabled=bool(data.get("enabled", True)),
             order_index=data.get("order_index"),
@@ -221,6 +238,11 @@ def dependents_of(by_key: dict[str, ModRef], key: str, within: set[str]) -> list
 # --------------------------------------------------------------------------- #
 
 
+# Stands for "every other selected mod" on either side of a pin. Kept as a
+# character no mod id can contain, so it can never collide with a real one.
+EVERYTHING = "*"
+
+
 def pin_edges(
     by_key: dict[str, ModRef],
     keys: set[str],
@@ -233,13 +255,30 @@ def pin_edges(
     have to be curated every time one does.
     """
     applies: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(first: str, second: str) -> None:
+        if first == second or first not in keys or second not in keys:
+            return
+        if (first, second) in seen:
+            return
+        seen.add((first, second))
+        applies.append((first, second))
+
     for before, after in pins or []:
         first, second = before.strip().lower(), after.strip().lower()
-        if first == second:
-            continue
-        if first in keys and second in keys and first in by_key and second in by_key:
-            if (first, second) not in applies:
-                applies.append((first, second))
+        # "before everything" and "after everything" are real instructions that
+        # authors write, and writing them as one pair per mod would mean two
+        # hundred and forty lines that go stale the moment a mod is added. The
+        # anchor stands for "every other selected mod", resolved fresh each time.
+        if second == EVERYTHING:
+            for other in keys:
+                add(first, other)
+        elif first == EVERYTHING:
+            for other in keys:
+                add(other, second)
+        else:
+            add(first, second)
     return applies
 
 
@@ -414,7 +453,12 @@ def validate(
         if ref is None:
             continue
 
-        for required in ref.requires:
+        # Over the raw entries, on purpose. The parser has already cleaned the
+        # ids, so requires and requires_raw resolve to the same mods; reading the
+        # raw ones is what lets the message quote "require=\\damnlib" back to the
+        # user. That still matters after the tool has seen through it, because
+        # the game reads the same line and has not.
+        for required in ref.requires_raw or ref.requires:
             if not (required or "").strip():
                 continue
             rkey = resolve_requirement(required, by_key)
@@ -479,9 +523,14 @@ def validate(
                     )
                 )
 
-        for other in ref.incompatible:
-            okey = other.strip().lower()
-            if okey in keys and okey != key:
+        for other in ref.incompatible_raw or ref.incompatible:
+            # Through the resolver, like requires. This was the fifth place that
+            # compared a hand typed mod id raw, and the most damaging: a mod
+            # declaring "incompatible=\\TombBodyTex" was reported as compatible
+            # with TombBodyTex, which the game itself refuses to load alongside
+            # it. A false all clear is worse than no check.
+            okey = resolve_requirement(other, by_key)
+            if okey is not None and okey in keys and okey != key:
                 pair = sorted([ref.mod_id, by_key[okey].mod_id])
                 if any(p.kind == "declared_incompatibility" and p.mods == pair for p in problems):
                     continue

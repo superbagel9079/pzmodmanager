@@ -66,8 +66,15 @@ class Mod:
     poster: str = ""
     mod_version: str = ""
 
+    # Clean ids: what every comparison uses. Normalised by the parser so no
+    # code downstream has to remember to do it.
     requires: list[str] = field(default_factory=list)
     incompatible: list[str] = field(default_factory=list)
+    # Exactly what the author typed, kept for reporting. "require=\\damnlib" is
+    # worth telling the user about even once the tool has seen through it,
+    # because the game reads the same line and does not.
+    requires_raw: list[str] = field(default_factory=list)
+    incompatible_raw: list[str] = field(default_factory=list)
     pack: list[str] = field(default_factory=list)
     tiledefs: list[str] = field(default_factory=list)
 

@@ -16,7 +16,7 @@ from .assets import classify
 from .loadorder import LoadOrder
 from .models import Finding, Mod, Severity
 from .scripts import SIGNIFICANT_KINDS
-from .selection import probable_typo
+from .selection import probable_typo, resolve_requirement
 from .steam import stated_incompatibilities
 
 log = logging.getLogger(__name__)
@@ -173,7 +173,18 @@ def rule_missing_dependencies(ctx: AnalysisContext) -> list[Finding]:
 def rule_declared_incompatibility(ctx: AnalysisContext) -> list[Finding]:
     findings = []
     for mod in ctx.mods:
-        clashing = [i for i in mod.incompatible if i.strip().lower() in ctx.by_key]
+        # resolve_requirement, not a raw compare: mod.info is typed by hand and
+        # "incompatible=\\TombBodyTex" names a mod that is very much installed.
+        clashing = []
+        for entry in mod.incompatible:
+            found = resolve_requirement(entry, ctx.by_key)
+            if found is None:
+                continue
+            # The real mod id, not the lowercased lookup key. The finding is read
+            # by a person and shown next to the other mod names.
+            named = getattr(ctx.by_key[found], "mod_id", found)
+            if named not in clashing:
+                clashing.append(named)
         if not clashing:
             continue
         findings.append(

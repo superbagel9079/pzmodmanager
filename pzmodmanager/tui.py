@@ -54,6 +54,7 @@ FIRST_RUN_ITEMS = [
     ("results", "Results"),
     ("manage", "Manage mods"),
     ("browse", "Add mods"),
+    ("gamelog", "Game log"),
     ("scan", "Scan"),
     ("settings", "Settings"),
     ("quit", "Quit"),
@@ -62,6 +63,7 @@ RETURNING_ITEMS = [
     ("results", "Last results"),
     ("manage", "Manage mods"),
     ("browse", "Add mods"),
+    ("gamelog", "Game log"),
     ("scan", "Rescan"),
     ("settings", "Settings"),
     ("quit", "Quit"),
@@ -352,6 +354,28 @@ class MenuScreen(Screen):
                     build=self.app.scan_options.build,
                 )
             )
+        elif choice == "gamelog":
+            from .gamelog_screen import GameLogScreen
+            from .selection import index_by_key, topological_order
+
+            # The order the tool would export, so the screen can say whether it
+            # is the order the game actually applied. Built from the saved
+            # selection when there is one, so the comparison is against what the
+            # user chose rather than everything installed.
+            predicted: list[str] = []
+            scan = self.app.stored
+            if scan is not None and scan.has_mods:
+                by_key = index_by_key(list(scan.mods))
+                saved = store.load_selection(self.app.selection_path)
+                keys = (
+                    {s.strip().lower() for s in saved} & set(by_key)
+                    if saved
+                    else {r.key for r in by_key.values() if r.was_enabled}
+                )
+                predicted, _cycle = topological_order(
+                    by_key, keys, pins=store.load_pins()
+                )
+            self.app.push_screen(GameLogScreen(predicted=predicted))
         elif choice == "settings":
             from .settings_screen import SettingsScreen
 

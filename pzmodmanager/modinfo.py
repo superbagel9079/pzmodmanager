@@ -30,6 +30,25 @@ def read_text_tolerant(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+# Characters that turn up around a mod id in a hand written mod.info and never
+# belong to one. A real machine has "require=\\damnlib" sitting next to a mod
+# whose id is "damnlib", and quotes, brackets and trailing punctuation all show
+# up the same way.
+_ID_JUNK = "\\/\"'`[](){}<>,;: \t"
+
+
+def clean_mod_id(value: str) -> str:
+    """Strip what an author typed around a mod id. The single cleaning rule.
+
+    Applied at the parser, so no comparison further down the line ever sees a
+    stray character. That placement is the point. Cleaning at each comparison
+    site meant remembering to, and it was forgotten twice: once in the sort, so
+    a library loaded after the mods needing it, and once in the incompatibility
+    check, so mods the game refuses to run together were reported as fine.
+    """
+    return (value or "").strip().strip(_ID_JUNK).strip()
+
+
 def _split_list(value: str) -> list[str]:
     parts = re.split(r"[;,]", value)
     return [p.strip() for p in parts if p.strip()]
@@ -70,7 +89,17 @@ def build_mod(mod_info_path: Path, source: str, workshop_id: str | None) -> Mod:
     mod_id = _first(data, "id") or _first(data, "modid") or root.name
     name = _first(data, "name") or mod_id
 
-    requires = list(dict.fromkeys(data.get("require", []) + data.get("requires", [])))
+    # Both forms are kept. The clean ids are what everything compares against;
+    # the raw ones are what the author actually wrote, which is still worth
+    # reporting because the game reads the same raw file and will complain too.
+    requires_raw = list(dict.fromkeys(data.get("require", []) + data.get("requires", [])))
+    incompatible_raw = list(dict.fromkeys(data.get("incompatible", [])))
+    requires = list(dict.fromkeys(
+        c for c in (clean_mod_id(r) for r in requires_raw) if c
+    ))
+    incompatible = list(dict.fromkeys(
+        c for c in (clean_mod_id(i) for i in incompatible_raw) if c
+    ))
 
     mod = Mod(
         mod_id=mod_id,
@@ -83,7 +112,9 @@ def build_mod(mod_info_path: Path, source: str, workshop_id: str | None) -> Mod:
         poster=_first(data, "poster"),
         mod_version=_first(data, "modversion") or _first(data, "version"),
         requires=requires,
-        incompatible=list(dict.fromkeys(data.get("incompatible", []))),
+        requires_raw=requires_raw,
+        incompatible=incompatible,
+        incompatible_raw=incompatible_raw,
         pack=list(dict.fromkeys(data.get("pack", []))),
         tiledefs=list(dict.fromkeys(data.get("tiledef", []))),
         raw=data,

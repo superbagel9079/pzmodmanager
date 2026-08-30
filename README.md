@@ -153,7 +153,38 @@ Here is what pzmodmanager actually detects, most reliable first:
 | A mod with no folder for the build you play | certain | medium |
 | The same texture, sound or model shipped twice | certain, cosmetic impact | low |
 
-#### B. What it cannot see
+#### B. One cleaning rule, at the parser
+
+`mod.info` is typed by hand and nothing checks it. A real machine has
+`require=\damnlib` sitting next to a mod whose id is `damnlib`, and
+`incompatible="TombBodyTex"` next to `TombBodyTex`. Every one of those has to be
+seen through before anything is compared.
+
+That cleaning used to happen at each comparison, and five places compare a mod
+id. Four remembered and one did not, a different one each time, and every miss
+was silent:
+
+| Where | What it looked like |
+|---|---|
+| the scan's rules | an installed library reported missing |
+| the manager panel | still missing, after the scan was fixed |
+| the dependency closure | "missing from disk" in the footer |
+| **the sort** | a library loaded after the mods needing it, while the panel said "order resolved" |
+| **the incompatibility check** | two mods reported as fine that the game refuses to load together |
+
+The last one is the worst kind of failure a checking tool can have: a false all
+clear. On a real 245 mod list it hid 16 declared incompatibilities.
+
+So the cleaning moved to `modinfo.clean_mod_id`, applied once when the file is
+read. Comparisons now start from clean ids and a sixth comparison site inherits
+that for free. What the author actually typed is kept alongside, in
+`requires_raw` and `incompatible_raw`, and used only for reporting: the game
+reads the same raw line and will still complain about it, so it is worth showing.
+
+A test asserts the invariant directly, over a deliberately nasty `mod.info`: once
+parsed, no id in `requires` or `incompatible` carries a stray character.
+
+#### C. What it cannot see
 
 What it does **not** see: purely logical incompatibilities, where two mods hook
 the same function cleanly but with contradictory assumptions. No static analysis
@@ -458,11 +489,54 @@ Three things worth knowing:
    is not an error. Mods come and go; the file should not need curating every
    time one does. The panel shows two counts when they differ: how many pins you
    have, and how many are actually shaping this order.
-3. They live in `load-order-pins.json` next to your other data, and only
+3. **`(everything else)` is a valid side of a pin.** "Load this above all
+   others" and "put this at the end" are things authors actually write, and
+   writing them as one pair per mod would be two hundred lines that go stale the
+   moment you add a mod. One pin covers it, resolved against the selection each
+   time.
+4. They live in `load-order-pins.json` next to your other data, and only
    **Reset everything** in the settings clears them. Clearing the last scan or
    the selection leaves them alone, since they are something you typed.
 
-#### F. The export
+#### F. Reading the game's own log
+
+Everything above is a prediction. The game keeps a record, and it is the only
+thing that knows what actually happened. Every launch it writes `console.txt`
+into its data folder (`~/Zomboid/console.txt`, with the previous sessions kept
+under `Logs/`), and in it:
+
+```
+LOG  : Mod          f:0> loading ETO_B
+LOG  : Mod          f:0> mod "ETO_B" overrides media/textures/vehicles/stepvan_1.png
+```
+
+The load order it really applied, and the winner of every file more than one mod
+supplies. **Game log** on the main menu reads it and shows three things.
+
+**Errors, grouped by shape.** A real session produced 6113 error lines, which is
+the sort of number that makes people stop reading. They were seven distinct
+problems: 5952 of them one missing skeleton bone name repeated over 26 bones,
+149 missing vehicle templates over 124 names, and a handful of translation
+format warnings. Quoted names and numbers are what varies, so the group counts
+both the lines and the distinct subjects, which is what tells you whether a
+problem is about mods you actually have.
+
+**Files lost to a later mod.** The mod loaded last wins a file both supply, and
+the loser's version is simply not used, with no error and nothing on screen.
+This is the game's own verdict, not a guess from the order. A big number is not
+automatically wrong: a texture optimiser is meant to be overwritten and a patch
+is meant to overwrite. A mod losing most of its files to something unrelated is
+the case worth opening.
+
+**The order applied, against the order predicted.** If a mod the tool put first
+was loaded fortieth, the order that was exported never reached the game, and
+that is worth knowing before spending an evening reordering. When the log is
+from a session with a different mod list, the screen says so instead of
+comparing two things that have nothing to do with each other.
+
+Nothing here writes anything. It reads one text file.
+
+#### G. The export
 
 The export produces a load order sorted so every mod comes after what it
 requires, using your existing order to break ties so a working list is disturbed
@@ -476,7 +550,7 @@ WorkshopItems=2392709985;3728775267;...
 They are written next to the report, along with a plain mod list and a file of
 Workshop links, and the selection is remembered for next time.
 
-#### G. Without the interface
+#### H. Without the interface
 
 The same thing works without the interface, which is handy for scripting a
 server:
@@ -493,7 +567,7 @@ dependency that an `--enable` pulled in. The resulting gap is reported rather
 than silently filled back, and exporting an unresolved selection prints a warning
 rather than refusing.
 
-#### H. On unsubscribing
+#### I. On unsubscribing
 
 There are two doors, and only one of them opens.
 
