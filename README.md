@@ -989,16 +989,36 @@ growth arrives. A fixed size is committed up front and is always there.
 
 **Step two, and only after the reboot, raise the Java heap.**
 
-In the game's install folder, `ProjectZomboid64.json` holds the launcher
-arguments. Raise the heap cap:
+Do this through Steam, not through the game's files. Right click Project
+Zomboid in your library, `Properties`, `General`, and put the heap cap in
+`Launch Options`, in front of whatever is already there:
 
 ```
-"-Xmx3072m"   ->   "-Xmx4096m"
+-Xmx6144m -agentlib:zbNative --
 ```
 
-Copy the file to `ProjectZomboid64.json.backup` first. Steam replaces this file
-without warning when it verifies the game's files, and you will want to know
-what it contained.
+Keep the trailing `--`. It separates the arguments meant for the Java virtual
+machine from the ones meant for the game, and everything before it goes to the
+virtual machine, which is where `-Xmx` belongs.
+
+**Why Steam and not `ProjectZomboid64.json`.** That file, in the install folder,
+also carries a heap cap, and editing it works. But Steam overwrites it without
+warning whenever it verifies the game's files or ships an update, and the change
+is silently gone. Launch Options live in Steam's own configuration and survive
+both.
+
+The two do not conflict, and it is worth understanding why rather than trusting
+it. Launch Options are appended after the arguments from the file, and when the
+same option appears twice the virtual machine keeps the last one. You can see it
+in any crash report, on the `Command Line` line: the arguments from the file
+come first, then yours. So the value you put in Steam is the one that applies,
+whatever the file says.
+
+Size it against the headroom you actually have. On a machine with sixteen
+gigabytes of page file, `-Xmx6144m` is comfortable. If you have not enlarged the
+page file yet, do not go past `-Xmx4096m`, and read step one again: the heap is
+committed memory like anything else, and a bigger one on a saturated commit
+limit brings the crash forward instead of preventing it.
 
 **Why that order and not the reverse.** The heap is committed memory like
 anything else. Raising it while the commit limit is already saturated does not
