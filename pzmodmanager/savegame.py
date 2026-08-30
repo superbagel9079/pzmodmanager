@@ -48,7 +48,65 @@ log = logging.getLogger(__name__)
 MODS_FILE = "mods.txt"
 BACKUP_SUFFIX = ".pzmodmanager-backup"
 
+# When the game dies, it copies the save next to itself with this on the end.
+# The copy is a corpse: it holds the mod list as it was at the moment of the
+# crash, and its files are written after the real save's, so sorting saves by
+# date puts the corpse first. That is how a crash folder ends up being read as
+# "your current load order", which is exactly backwards.
+CRASH_SUFFIX = "_crash"
+
+# The game records which save it last opened, one line for the save, one for the
+# game mode. Believing this rather than a timestamp is the difference between
+# asking the game and guessing.
+LATEST_SAVE_FILE = "latestSave.ini"
+
 _MOD_LINE = re.compile(r"^(\s*)mod\s*=\s*(.+?),?\s*$", re.MULTILINE)
+
+
+def is_crash_save(folder: Path) -> bool:
+    """Whether this folder is the copy the game left behind after a crash."""
+    return Path(folder).name.endswith(CRASH_SUFFIX)
+
+
+def latest_save_folder() -> Path | None:
+    """The save the game itself says it opened last, if it can be found.
+
+    `latestSave.ini` holds the save name on the first line and the game mode on
+    the second, which together give `Saves/<mode>/<name>`. This is the game's own
+    answer, so it beats any guess made from file dates.
+
+    Returns None when the file is missing, malformed, or points somewhere that
+    is not a save any more, and never raises: every caller has a fallback.
+    """
+    from .discovery import default_user_folder
+
+    user = default_user_folder()
+    if user is None:
+        return None
+    marker = user / LATEST_SAVE_FILE
+    if not marker.is_file():
+        return None
+    try:
+        lines = [
+            line.strip()
+            for line in marker.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+    except OSError as exc:
+        log.warning("Could not read %s: %s", marker, exc)
+        return None
+    if len(lines) < 2:
+        log.warning("%s did not hold a save name and a game mode", marker)
+        return None
+    name, mode = lines[0], lines[1]
+    # A name with a separator in it would let this walk out of Saves/.
+    if any(part in (".", "..") or "/" in part or "\\" in part for part in (name, mode)):
+        log.warning("%s named a path rather than a save, ignoring it", marker)
+        return None
+    folder = user / "Saves" / mode / name
+    if not (folder / MODS_FILE).is_file():
+        return None
+    return folder
 
 
 @dataclass
@@ -131,8 +189,16 @@ def read_save(folder: Path) -> SaveGame | None:
     )
 
 
-def find_saves(limit: int = 25) -> list[SaveGame]:
-    """Every save that has a mod list, most recently played first."""
+def find_saves(limit: int = 25, include_crash: bool = False) -> list[SaveGame]:
+    """Every save that has a mod list, the one the game last opened first.
+
+    Crash copies are left out. They are not saves you can go back to, and
+    offering to write a load order into one is offering to edit a corpse.
+
+    The rest are ordered by date, except that the save named by
+    `latestSave.ini` is lifted to the front. A save's files are touched by more
+    than playing it, so the newest timestamp is not reliably the current game.
+    """
     from .discovery import default_user_folder
 
     user = default_user_folder()
@@ -144,13 +210,24 @@ def find_saves(limit: int = 25) -> list[SaveGame]:
     found: list[SaveGame] = []
     try:
         for candidate in root.glob(f"*/*/{MODS_FILE}"):
-            save = read_save(candidate.parent)
+            folder = candidate.parent
+            if not include_crash and is_crash_save(folder):
+                continue
+            save = read_save(folder)
             if save is not None:
                 found.append(save)
     except OSError as exc:
         log.warning("Could not walk %s: %s", root, exc)
         return []
     found.sort(key=lambda s: s.saved_at, reverse=True)
+
+    current = latest_save_folder()
+    if current is not None:
+        here = Path(current).resolve()
+        for i, save in enumerate(found):
+            if save.path.resolve() == here:
+                found.insert(0, found.pop(i))
+                break
     return found[:limit]
 
 

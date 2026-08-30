@@ -2557,6 +2557,91 @@ def close_log_handlers() -> None:
             logger.removeHandler(handler)
 
 
+
+def test_crash_folders_are_not_the_current_order(tmp: Path) -> None:
+    """A crash copy must never be mistaken for the player's current save.
+
+    When the game dies it copies the save folder beside itself with `_crash` on
+    the end, and it writes that copy *after* the original. So on a machine that
+    has crashed even once, the most recently modified mods.txt on disk belongs to
+    a dead save. Picking a save by date therefore hands back the mod list as it
+    was at the moment of the crash, and presents it as the current load order.
+
+    That is not staleness, it is the wrong save, and it is silent: the list looks
+    plausible, so nothing warns you. On a real machine this picked
+    `2026-08-30_03-32-14_crash` over the save that was actually being played.
+
+    The fix is to stop guessing. The game writes down which save it last opened,
+    in latestSave.ini, so that answer is used first and the date is only a
+    fallback. Both halves are checked here, plus a malformed marker, because a
+    fallback that crashes is not a fallback.
+    """
+    from pzmodmanager import discovery, loadorder, savegame
+
+    user = tmp / "ZomboidCrash"
+    saves = user / "Saves" / "Apocalypse"
+
+    def make(name: str, mods: list[str], when: float) -> Path:
+        folder = saves / name
+        folder.mkdir(parents=True, exist_ok=True)
+        body = "".join(f"    mod = {m},\n" for m in mods)
+        target = folder / savegame.MODS_FILE
+        target.write_text(f"VERSION = 1,\n\nmods\n{{\n{body}}}\n\nmaps\n{{\n}}\n",
+                          encoding="utf-8")
+        os.utime(target, (when, when))
+        return folder
+
+    # The save actually being played, then the crash copy written after it. The
+    # ordering of these two timestamps is the whole point of the test.
+    played = make("2026-08-30_15-12-12", ["ZombieBuddy", "damnlib", "ETO_B"], 1_000_000)
+    crashed = make("2026-08-30_03-32-14_crash", ["ZombieBuddy", "OldMod"], 2_000_000)
+    make("2026-08-30_03-32-14", ["ZombieBuddy", "OldMod"], 500_000)
+
+    check(savegame.is_crash_save(crashed), "crash: the _crash copy is recognised")
+    check(not savegame.is_crash_save(played), "crash: a real save is not")
+
+    original = discovery.default_user_folder
+    try:
+        discovery.default_user_folder = lambda: user
+
+        # No marker yet: the date decides, and the crash copy is the newest.
+        # Without the fix this returns the crash folder, which is the bug.
+        picked = loadorder.default_order_candidates()
+        check(picked and not savegame.is_crash_save(picked[0].parent),
+              f"crash: a crash copy is never offered as the load order "
+              f"(got {picked[0].parent.name if picked else None})")
+
+        # Now the game's own answer, which points at neither of the newest two.
+        (user / savegame.LATEST_SAVE_FILE).write_text(
+            "2026-08-30_15-12-12\nApocalypse\n", encoding="utf-8")
+        check(savegame.latest_save_folder() == played,
+              "crash: latestSave.ini names the save the game last opened")
+        picked = loadorder.default_order_candidates()
+        check(picked and picked[0].parent == played,
+              f"crash: the game's own answer wins over the file dates "
+              f"(got {picked[0].parent.name if picked else None})")
+
+        listed = savegame.find_saves()
+        check(all(not savegame.is_crash_save(s.path) for s in listed),
+              "crash: the apply screen is not offered a crash copy to write into")
+        check(listed and listed[0].path == played,
+              "crash: the save being played is offered first")
+        check(len(savegame.find_saves(include_crash=True)) == len(listed) + 1,
+              "crash: the copies are still reachable when explicitly asked for")
+
+        # A marker that lies, points outside, or is truncated must fall back
+        # rather than raise, and must still refuse the crash copy.
+        for bad in ("", "only-one-line\n", "..\n..\n", "nope\nApocalypse\n"):
+            (user / savegame.LATEST_SAVE_FILE).write_text(bad, encoding="utf-8")
+            check(savegame.latest_save_folder() is None,
+                  f"crash: a malformed marker is ignored rather than trusted ({bad!r})")
+            picked = loadorder.default_order_candidates()
+            check(picked and not savegame.is_crash_save(picked[0].parent),
+                  "crash: the fallback still refuses the crash copy")
+    finally:
+        discovery.default_user_folder = original
+
+
 def main() -> int:
     test_script_parser()
     test_branch_selection()
@@ -2579,6 +2664,7 @@ def main() -> int:
         test_order_view()
         test_game_log(tmp)
         test_apply_to_save(tmp)
+        test_crash_folders_are_not_the_current_order(tmp)
         test_order_pins(tmp)
         test_restore_scanned()
         test_one_dependency_resolver()

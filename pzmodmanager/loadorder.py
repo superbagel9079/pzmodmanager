@@ -170,22 +170,45 @@ def default_order_candidates() -> list[Path]:
 
     The save comes first because it is what the game actually reads. The Lua
     list is kept as a fallback for older builds that had one.
+
+    Which save, though, is the whole question, and picking the most recently
+    modified one was wrong twice over.
+
+    A crash leaves a copy of the save beside it, named with `_crash` on the end,
+    and that copy is written *after* the real save. So on any machine that has
+    crashed even once, the newest mods.txt on disk belongs to a dead save, and
+    the tool would present the mod list from the moment of the crash as the
+    player's current order. That is not a stale reading, it is the wrong save.
+
+    So ask the game instead. It writes down which save it last opened, and that
+    answer is used when it is available. The date is only a fallback for when it
+    is not, and crash copies are excluded from that fallback too.
     """
     from .discovery import default_user_folder
-    from .savegame import MODS_FILE
+    from .savegame import MODS_FILE, is_crash_save, latest_save_folder
 
     user = default_user_folder()
     if not user:
         return []
     found: list[Path] = []
+
+    current = latest_save_folder()
+    if current is not None:
+        found.append(current / MODS_FILE)
+
     saves = user / "Saves"
     if saves.is_dir():
         try:
-            candidates = [p for p in saves.glob(f"*/*/{MODS_FILE}") if p.is_file()]
+            candidates = [
+                p
+                for p in saves.glob(f"*/*/{MODS_FILE}")
+                if p.is_file() and not is_crash_save(p.parent) and p not in found
+            ]
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             found.extend(candidates[:1])
         except OSError as exc:
             log.warning("Could not look for a save mod list: %s", exc)
+
     legacy = user / "Lua" / "saved_modlists.txt"
     if legacy.is_file():
         found.append(legacy)
