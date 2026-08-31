@@ -2973,6 +2973,23 @@ def test_fix_order_arrows_always_move(tmp: Path) -> None:
             await pilot.press("space")
             await pilot.pause()
             seen["toggled"] = screen.destinations[usable[0]].chosen != before
+            await pilot.press("space")
+            await pilot.pause()
+
+            def marks() -> list[str]:
+                return [
+                    rows.get_option_at_index(i).prompt.split("\n")[0].strip()[:3]
+                    for i in range(rows.option_count)
+                ]
+
+            rows.highlighted = usable[0]
+            seen["marks_at_rest"] = marks()
+            await pilot.press("space")
+            await pilot.pause()
+            seen["marks_after_one"] = marks()
+            await pilot.press("space")
+            await pilot.pause()
+            seen["marks_after_two"] = marks()
         return seen
 
     original = discovery.default_user_folder
@@ -2994,6 +3011,19 @@ def test_fix_order_arrows_always_move(tmp: Path) -> None:
     check(seen.get("still_unticked"),
           "fix arrows: and does not tick it anyway")
     check(seen["toggled"], "fix arrows: SPACE still ticks a writable row")
+    # SPACE used to be a screen level Binding as well as, on some Textual
+    # versions, an OptionList binding of its own. Both fired on one keypress,
+    # the destination flipped twice, and the cross never appeared. One press
+    # must move the mark, and two must put it back.
+    check(seen["marks_after_one"] != seen["marks_at_rest"],
+          f"fix arrows: one SPACE changes the mark (was {seen['marks_at_rest']}, "
+          f"now {seen['marks_after_one']})")
+    check(seen["marks_after_two"] == seen["marks_at_rest"],
+          "fix arrows: and a second SPACE puts it back")
+    # Every row keeps its brackets, including the ones that cannot be written.
+    # A row with no checkbox at all reads as a rendering fault.
+    check(all(m in ("[x]", "[ ]", "[-]") for m in seen["marks_at_rest"]),
+          f"fix arrows: every row carries a checkbox (got {seen['marks_at_rest']})")
 
 
 

@@ -95,8 +95,12 @@ OptionList > .option-list--option-highlighted {
 }
 """
 
+# Three states, and all three keep the brackets so the column always lines up.
+# A row with no brackets at all read as a missing checkbox rather than as a
+# destination that cannot be written, which is exactly how it was reported.
 TICKED = "[x]"
 UNTICKED = "[ ]"
+BLOCKED = "[-]"
 
 
 class FixOrderScreen(Screen):
@@ -107,9 +111,15 @@ class FixOrderScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("q,Q", "back", "Back"),
-        Binding("space", "toggle", "Toggle"),
         Binding("a,A", "apply", "Apply"),
     ]
+    # SPACE is deliberately NOT a Binding here. Some Textual versions give
+    # OptionList its own space binding that fires OptionSelected, and a screen
+    # level binding on the same key then toggled a second time in the same
+    # keypress. Two toggles look exactly like none, which is how this was
+    # reported: the cross never appeared. Handling it in on_key instead means
+    # the event reaches this screen only when the list did not already act on
+    # it, so the destination flips exactly once either way.
 
     def __init__(
         self,
@@ -240,7 +250,12 @@ class FixOrderScreen(Screen):
         # reach.
         options = []
         for dest in self.destinations:
-            mark = TICKED if dest.chosen else UNTICKED if dest.available else "   "
+            if not dest.available:
+                mark = BLOCKED
+            elif dest.chosen:
+                mark = TICKED
+            else:
+                mark = UNTICKED
             head = f" {mark}  {dest.label.ljust(18)} {dest.detail if dest.available else dest.reason}"
             second = dest.where or (dest.reason if dest.available else "")
             body = head if not second else f"{head}\n          {second}"
@@ -264,12 +279,23 @@ class FixOrderScreen(Screen):
         choice.highlighted = 0
 
         self.query_one("#footer", Static).update(
-            "UP and DOWN move, SPACE ticks, 'a' applies, ESC goes back"
+            "UP and DOWN move, SPACE or ENTER ticks, 'a' applies, ESC goes back"
             if not self.results
             else "done, ESC to go back"
         )
 
     # ------------------------------------------------------------- acting --
+
+    def on_key(self, event) -> None:
+        """SPACE ticks the highlighted row, once, whatever Textual does with it."""
+        if event.key != "space":
+            return
+        rows = self.query_one("#rows", OptionList)
+        if not rows.has_focus:
+            return
+        event.stop()
+        event.prevent_default()
+        self.action_toggle()
 
     def action_toggle(self) -> None:
         rows = self.query_one("#rows", OptionList)
