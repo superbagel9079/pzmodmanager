@@ -2398,6 +2398,7 @@ def test_nothing_is_blue() -> None:
     from pzmodmanager.settings_screen import SettingsScreen
     from pzmodmanager.serverlist_screen import ConfirmAlignScreen, ServerListScreen
     from pzmodmanager.serverlist import ServerDiff, ServerList
+    from pzmodmanager.fixorder_screen import FixOrderScreen
     from pzmodmanager.tui import MONOCHROME, ModCheckApp
 
     # Black, white, and the greys the stylesheet uses. Nothing else.
@@ -2426,6 +2427,7 @@ def test_nothing_is_blue() -> None:
                 ConfirmAlignScreen(
                     ServerDiff(server=ServerList(), to_enable=["A"], to_disable=["B"])
                 ),
+                FixOrderScreen([sel.ModRef(mod_id="A", name="A")], []),
             ]
             for screen in screens:
                 await app.push_screen(screen)
@@ -2688,6 +2690,313 @@ def test_server_list_matching(tmp: Path) -> None:
 
 
 
+def test_one_order_reaches_every_destination(tmp: Path) -> None:
+    """The short path: one computed order, written to the places that read one.
+
+    This exists because the tool could always work out the right order and then
+    made you carry it around by hand. Three files read a load order and each one
+    wanted a different ritual, so the answer was correct and the game still
+    loaded the mods in the wrong sequence.
+
+    The interesting one is the sorting rules. Mod Load Order Sorter does a real
+    topological sort and does read `require=`, but it looks the requirement up
+    exactly as written. A mod.info saying `require=\\NeatUI_Framework` therefore
+    misses, and the edge is dropped in silence: on a real list of 126 mods that
+    was 16 of 36 dependencies. The sorter DOES clean the values it reads from
+    its own rules file, so restating the dependencies there is the way through,
+    and that is what render_rules produces.
+
+    Everything else here is about not breaking someone's files: a rule this tool
+    did not write survives, an ini keeps its password, and every write leaves a
+    backup.
+    """
+    from pzmodmanager import destinations as dest
+    from pzmodmanager import discovery, savegame
+
+    refs = [
+        sel.ModRef(mod_id="NeatUI_Framework", name="Framework"),
+        sel.ModRef(mod_id="CleanUI", name="Clean UI",
+                   requires=["NeatUI_Framework"],
+                   requires_raw=["\\NeatUI_Framework"]),
+        sel.ModRef(mod_id="Neat_Crafting", name="Crafting",
+                   requires=["NeatUI_Framework"],
+                   requires_raw=["\\NeatUI_Framework"]),
+        sel.ModRef(mod_id="ModLoadOrderSorter_b42", name="Sorter"),
+        sel.ModRef(mod_id="Solo", name="Solo"),
+    ]
+    by_key = sel.index_by_key(refs)
+    keys = set(by_key)
+
+    # --- the rules file -----------------------------------------------------
+    # A rule the user wrote by hand, which this tool must not eat.
+    existing = "[Solo]\r\nloadFirst=on\r\n[CleanUI]\r\nloadAfter=Stale\r\n"
+    rules = dest.render_rules(by_key, keys, existing)
+    check("loadAfter=NeatUI_Framework" in rules,
+          "destinations: a backslashed require becomes a usable loadAfter rule")
+    check("loadAfter=Stale" not in rules,
+          "destinations: the previous loadAfter is replaced, not appended to")
+    check("[Solo]\r\nloadFirst=on" in rules,
+          "destinations: a rule the tool does not own is carried through")
+    check(dest.render_rules(by_key, keys, rules) == rules,
+          "destinations: rendering twice changes nothing")
+    blocks, edges = dest.rules_summary(rules)
+    check(edges == 2, f"destinations: both dependency edges are stated (got {edges})")
+
+    # --- the server ini -----------------------------------------------------
+    ini_text = (
+        "PVP=true\r\n"
+        "Mods=Old;Older\r\n"
+        "RCONPassword=hunter2\r\n"
+        "WorkshopItems=111\r\n"
+        "Seed=abc\r\n"
+    )
+    lines = sel.export_server_ini(by_key, ["NeatUI_Framework", "CleanUI"])
+    merged = dest.replace_ini_lines(ini_text, lines)
+    check("RCONPassword=hunter2" in merged and "Seed=abc" in merged,
+          "destinations: the rest of the server ini is untouched")
+    check("Old;Older" not in merged and "NeatUI_Framework" in merged,
+          "destinations: the Mods= line is replaced")
+    check(merged.count("Mods=") == 1,
+          "destinations: replacing does not duplicate the line")
+    try:
+        dest.replace_ini_lines("PVP=true\n", lines)
+        check(False, "destinations: an ini with no Mods= line is refused")
+    except ValueError:
+        check(True, "destinations: an ini with no Mods= line is refused")
+
+    # --- the atomic write ---------------------------------------------------
+    target = tmp / "server" / "bar.ini"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(ini_text, encoding="utf-8")
+    ok, message, copy = dest.write_text_safely(target, merged)
+    check(ok, f"destinations: the write succeeds ({message})")
+    check(copy is not None and copy.is_file() and "Old;Older" in copy.read_text(encoding="utf-8"),
+          "destinations: the previous file is kept beside it")
+    check(not list(target.parent.glob("*.pzmodmanager-tmp")),
+          "destinations: no temporary file is left behind")
+
+    # --- the three destinations --------------------------------------------
+    user = tmp / "ZomboidFix"
+    (user / "Lua").mkdir(parents=True, exist_ok=True)
+    save_dir = user / "Saves" / "Apocalypse" / "2026-08-31_10-00-00"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"    mod = {m},\n" for m in ["CleanUI", "NeatUI_Framework", "Solo"])
+    (save_dir / savegame.MODS_FILE).write_text(
+        f"VERSION = 1,\n\nmods\n{{\n{body}}}\n\nmaps\n{{\n}}\n", encoding="utf-8")
+    (user / savegame.LATEST_SAVE_FILE).write_text(
+        "2026-08-31_10-00-00\nApocalypse\n", encoding="utf-8")
+
+    original = discovery.default_user_folder
+    try:
+        discovery.default_user_folder = lambda: user
+        ordered = ["NeatUI_Framework", "CleanUI", "Solo"]
+        found = dest.plan_destinations(ordered, by_key, keys, refs,
+                                       server_ini=str(target), user_folder=user)
+        got = {d.key: d for d in found}
+        check(set(got) == {"save", "rules", "server"},
+              "destinations: all three are always reported, present or not")
+        check(got["save"].available and got["save"].target == save_dir / savegame.MODS_FILE,
+              "destinations: the save the game last opened is the one offered")
+        check(got["rules"].available and got["rules"].target == user / "Lua" / dest.RULES_NAME,
+              "destinations: the rules file is offered when the sorter is installed")
+        check(got["server"].available, "destinations: a reachable server ini is offered")
+
+        # Writing the save goes through the existing guarded path.
+        result = dest.apply_destination(got["save"], ordered)
+        check(result.ok, f"destinations: the save is rewritten ({result.message})")
+        rewritten = savegame.read_save(save_dir)
+        check(rewritten.mods == ordered,
+              f"destinations: in the computed order (got {rewritten.mods})")
+        check(result.backup is not None and result.backup.is_file(),
+              "destinations: with the old list kept beside it")
+
+        # And the sorter being absent removes the row rather than failing.
+        without = [r for r in refs if r.mod_id != "ModLoadOrderSorter_b42"]
+        found = dest.plan_destinations(ordered, sel.index_by_key(without),
+                                       {r.key for r in without}, without,
+                                       user_folder=user)
+        rules_row = [d for d in found if d.key == "rules"][0]
+        check(not rules_row.available and "Sorter" in rules_row.reason,
+              "destinations: no sorter installed means no rules row to act on")
+        server_row = [d for d in found if d.key == "server"][0]
+        check(not server_row.available and server_row.payload.startswith("Mods="),
+              "destinations: with no server path the lines are still offered to copy")
+    finally:
+        discovery.default_user_folder = original
+
+
+def test_fix_order_screen_changes_nothing_until_confirmed(tmp: Path) -> None:
+    """The short path must stay as careful as the long one.
+
+    One screen that writes three files is exactly the shape that invites an
+    accident, so the guarantees are checked rather than assumed: nothing is
+    written on the way in, Cancel is the highlighted entry, and backing out of
+    the confirmation leaves every file byte for byte as it was.
+    """
+    import asyncio
+
+    from pzmodmanager import discovery, savegame
+    from pzmodmanager.fixorder_screen import ConfirmFixScreen, FixOrderScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+
+    user = tmp / "ZomboidScreen"
+    (user / "Lua").mkdir(parents=True, exist_ok=True)
+    save_dir = user / "Saves" / "Apocalypse" / "2026-08-31_11-00-00"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"    mod = {m},\n" for m in ["B", "A"])
+    mods_txt = save_dir / savegame.MODS_FILE
+    mods_txt.write_text(f"VERSION = 1,\n\nmods\n{{\n{body}}}\n\nmaps\n{{\n}}\n",
+                        encoding="utf-8")
+    (user / savegame.LATEST_SAVE_FILE).write_text(
+        "2026-08-31_11-00-00\nApocalypse\n", encoding="utf-8")
+    before = mods_txt.read_bytes()
+
+    refs = [
+        sel.ModRef(mod_id="A", name="A"),
+        sel.ModRef(mod_id="B", name="B", requires=["A"], requires_raw=["\\A"]),
+    ]
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(110, 40)) as pilot:
+            screen = FixOrderScreen(refs, [])
+            await app.push_screen(screen)
+            await pilot.pause()
+            seen["ordered"] = list(screen.ordered)
+            seen["untouched_on_open"] = mods_txt.read_bytes() == before
+            seen["destinations"] = {d.key: d.available for d in screen.destinations}
+            await pilot.press("a")
+            await pilot.pause()
+            seen["confirm"] = isinstance(app.screen, ConfirmFixScreen)
+            if seen["confirm"]:
+                from textual.widgets import OptionList
+
+                choice = app.screen.query_one("#choice", OptionList)
+                seen["default"] = choice.get_option_at_index(choice.highlighted).id
+                await pilot.press("escape")
+                await pilot.pause()
+            seen["untouched_after_cancel"] = mods_txt.read_bytes() == before
+        return seen
+
+    original = discovery.default_user_folder
+    try:
+        discovery.default_user_folder = lambda: user
+        seen = asyncio.run(run())
+    finally:
+        discovery.default_user_folder = original
+
+    check(seen["ordered"] == ["A", "B"],
+          f"fix screen: the dependency decides the order (got {seen['ordered']})")
+    check(seen["untouched_on_open"],
+          "fix screen: opening it writes nothing")
+    check(seen["destinations"].get("save") is True,
+          "fix screen: the save is found and offered")
+    check(seen.get("confirm"), "fix screen: applying asks first")
+    check(seen.get("default") == "cancel",
+          "fix screen: Cancel is the highlighted entry")
+    check(seen["untouched_after_cancel"],
+          "fix screen: backing out leaves the save exactly as it was")
+
+
+
+def test_fix_order_arrows_always_move(tmp: Path) -> None:
+    """Every destination row must be reachable, even the ones you cannot write.
+
+    The first version of this screen put each file path on its own disabled row
+    and disabled any destination that could not be written. On a real machine
+    that had a save already in the right order, no server configured and only
+    the sorting rules to write, that left exactly ONE enabled option in the
+    list. Textual skips disabled options when navigating, so the arrow keys did
+    nothing at all and the screen looked frozen.
+
+    The fix is to disable nothing and refuse the toggle instead, with the reason
+    in the footer. A row you can move to and be told why beats a row you cannot
+    reach. This test reproduces that exact machine and walks the cursor.
+    """
+    import asyncio
+
+    from pzmodmanager import discovery, savegame
+    from pzmodmanager.fixorder_screen import FixOrderScreen
+    from pzmodmanager.settings import Settings
+    from pzmodmanager.tui import ModCheckApp
+    from textual.widgets import OptionList
+
+    user = tmp / "ZomboidArrows"
+    (user / "Lua").mkdir(parents=True, exist_ok=True)
+    save = user / "Saves" / "Apocalypse" / "2026-08-30_21-38-58"
+    save.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"    mod = {m},\n" for m in ["A", "B"])
+    (save / savegame.MODS_FILE).write_text(
+        f"VERSION = 1,\n\nmods\n{{\n{body}}}\n\nmaps\n{{\n}}\n", encoding="utf-8")
+    (user / savegame.LATEST_SAVE_FILE).write_text(
+        "2026-08-30_21-38-58\nApocalypse\n", encoding="utf-8")
+
+    refs = [
+        sel.ModRef(mod_id="A", name="A"),
+        sel.ModRef(mod_id="B", name="B", requires=["A"], requires_raw=["\\A"]),
+        sel.ModRef(mod_id="ModLoadOrderSorter_b42", name="Sorter"),
+    ]
+
+    async def run() -> dict:
+        seen: dict = {}
+        app = ModCheckApp(ScanOptions(), settings=Settings(), cli_overrides=set())
+        async with app.run_test(size=(100, 40)) as pilot:
+            screen = FixOrderScreen(refs, [])
+            await app.push_screen(screen)
+            await pilot.pause()
+            rows = screen.query_one("#rows", OptionList)
+            seen["count"] = rows.option_count
+            seen["focus"] = app.focused.id if app.focused else None
+            seen["writable"] = sum(1 for d in screen.destinations if d.available)
+            visited = []
+            for _ in range(4):
+                visited.append(rows.highlighted)
+                await pilot.press("down")
+                await pilot.pause()
+            seen["visited"] = visited
+            # A destination that cannot be written says so instead of doing
+            # nothing, which is the whole point of keeping it reachable.
+            blocked = [i for i, d in enumerate(screen.destinations) if not d.available]
+            if blocked:
+                rows.highlighted = blocked[0]
+                await pilot.press("space")
+                await pilot.pause()
+                seen["told_why"] = str(
+                    screen.query_one("#footer").render()
+                ).strip() != ""
+                seen["still_unticked"] = not screen.destinations[blocked[0]].chosen
+            usable = [i for i, d in enumerate(screen.destinations) if d.available]
+            rows.highlighted = usable[0]
+            before = screen.destinations[usable[0]].chosen
+            await pilot.press("space")
+            await pilot.pause()
+            seen["toggled"] = screen.destinations[usable[0]].chosen != before
+        return seen
+
+    original = discovery.default_user_folder
+    try:
+        discovery.default_user_folder = lambda: user
+        seen = asyncio.run(run())
+    finally:
+        discovery.default_user_folder = original
+
+    check(seen["count"] == 3,
+          f"fix arrows: one row per destination, no filler rows (got {seen['count']})")
+    check(seen["writable"] < 3,
+          "fix arrows: this machine really does have an unwritable destination")
+    check(len(set(seen["visited"])) == 3,
+          f"fix arrows: the cursor reaches every row (visited {seen['visited']})")
+    check(seen["focus"] == "rows",
+          "fix arrows: the list has focus when the screen opens")
+    check(seen.get("told_why"), "fix arrows: SPACE on an unwritable row says why")
+    check(seen.get("still_unticked"),
+          "fix arrows: and does not tick it anyway")
+    check(seen["toggled"], "fix arrows: SPACE still ticks a writable row")
+
+
+
 def test_crash_folders_are_not_the_current_order(tmp: Path) -> None:
     """A crash copy must never be mistaken for the player's current save.
 
@@ -2802,6 +3111,7 @@ def test_focus_never_greys_the_background() -> None:
     from pzmodmanager.settings_screen import SettingsScreen
     from pzmodmanager.serverlist_screen import ConfirmAlignScreen, ServerListScreen
     from pzmodmanager.serverlist import ServerDiff, ServerList
+    from pzmodmanager.fixorder_screen import FixOrderScreen
     from pzmodmanager.tui import ModCheckApp
 
     async def run() -> dict:
@@ -2822,6 +3132,7 @@ def test_focus_never_greys_the_background() -> None:
                 ConfirmAlignScreen(
                     ServerDiff(server=ServerList(), to_enable=["A"], to_disable=["B"])
                 ),
+                FixOrderScreen([sel.ModRef(mod_id="A", name="A")], []),
             ]
 
             def sweep(screen, label: str) -> None:
@@ -2889,6 +3200,9 @@ def main() -> int:
         test_apply_to_save(tmp)
         test_crash_folders_are_not_the_current_order(tmp)
         test_server_list_matching(tmp)
+        test_one_order_reaches_every_destination(tmp)
+        test_fix_order_screen_changes_nothing_until_confirmed(tmp)
+        test_fix_order_arrows_always_move(tmp)
         test_order_pins(tmp)
         test_restore_scanned()
         test_one_dependency_resolver()
